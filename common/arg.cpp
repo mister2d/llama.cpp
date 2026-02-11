@@ -2955,6 +2955,67 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--slot-lifecycle"}, "MODE",
+        string_format(
+            "server-side slot lifecycle mode: one of auto|off|conservative|strict (default: auto; router child resolves to conservative)"
+        ),
+        [](common_params & params, const std::string & value) {
+            if (value == "auto") {
+                params.slot_lifecycle_mode = -1;
+            } else if (value == "off") {
+                params.slot_lifecycle_mode = 0;
+            } else if (value == "conservative") {
+                params.slot_lifecycle_mode = 1;
+            } else if (value == "strict") {
+                params.slot_lifecycle_mode = 2;
+            } else {
+                throw std::invalid_argument("invalid value: must be one of auto|off|conservative|strict");
+            }
+            params.slot_lifecycle_mode_explicit = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_LIFECYCLE"));
+    add_opt(common_arg(
+        {"--slot-lifecycle-strict-status-code"}, "N",
+        string_format("HTTP status code for strict lifecycle failures (default: %d)", params.slot_lifecycle_strict_status_code),
+        [](common_params & params, int value) {
+            if (value < 400 || value > 599) {
+                throw std::invalid_argument("invalid status code: must be 400-599");
+            }
+            params.slot_lifecycle_strict_status_code = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_LIFECYCLE_STRICT_STATUS_CODE"));
+    add_opt(common_arg(
+        {"--slot-lifecycle-restore-min-tokens"}, "N",
+        string_format("minimum restored tokens required to treat restore as successful (default: %d)", params.slot_lifecycle_restore_min_tokens),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value: must be >= 0");
+            }
+            params.slot_lifecycle_restore_min_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_LIFECYCLE_RESTORE_MIN_TOKENS"));
+    add_opt(common_arg(
+        {"--slot-lifecycle-save-min-restored-tokens"}, "N",
+        string_format("minimum restored tokens required before applying save-guard ratio checks (default: %d)", params.slot_lifecycle_save_min_restored_tokens),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value: must be >= 0");
+            }
+            params.slot_lifecycle_save_min_restored_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_LIFECYCLE_SAVE_MIN_RESTORED_TOKENS"));
+    add_opt(common_arg(
+        {"--slot-lifecycle-save-min-ratio"}, "RATIO",
+        string_format("minimum prompt_tokens/restored_tokens ratio required to save after restore (default: %.3f)", params.slot_lifecycle_save_min_ratio),
+        [](common_params & params, const std::string & value) {
+            const float ratio = std::stof(value);
+            if (ratio < 0.0f) {
+                throw std::invalid_argument("invalid value: must be >= 0");
+            }
+            params.slot_lifecycle_save_min_ratio = ratio;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_LIFECYCLE_SAVE_MIN_RATIO"));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

@@ -158,6 +158,18 @@ def test_router_no_models_autoload():
     assert "error" not in success_res.body
 
 
+def test_router_default_slot_lifecycle_mode_is_conservative():
+    global server
+    server.start()
+    model_id = "ggml-org/tinygemma3-GGUF:Q8_0"
+
+    _load_model_and_wait(model_id)
+
+    props = server.make_request("GET", f"/props?model={model_id}")
+    assert props.status_code == 200
+    assert props.body["slot_lifecycle_mode"] == "conservative"
+
+
 def test_router_api_key_required():
     global server
     server.api_key = "sk-router-secret"

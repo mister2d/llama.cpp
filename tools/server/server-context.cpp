@@ -14,8 +14,11 @@
 
 #include <cstddef>
 #include <cinttypes>
+#include <cctype>
+#include <cstdlib>
 #include <memory>
 #include <filesystem>
+#include <fstream>
 
 // fix problem with std::min and std::max
 #if defined(_WIN32)
@@ -29,6 +32,138 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+static std::string slot_lifecycle_mode_name(int32_t mode) {
+    switch (mode) {
+        case 0: return "off";
+        case 1: return "conservative";
+        case 2: return "strict";
+        default: return "unknown";
+    }
+}
+
+static std::string slot_lifecycle_sanitize_filename_component(const std::string & input) {
+    std::string out;
+    out.reserve(input.size());
+    for (char c : input) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-' || c == '_') {
+            out.push_back(c);
+        } else {
+            out.push_back('_');
+        }
+    }
+    if (out.empty()) {
+        out = "model";
+    }
+    return out;
+}
+
+static std::string slot_lifecycle_default_filename(const std::string & model_name, int32_t id_slot) {
+    return slot_lifecycle_sanitize_filename_component(model_name) + ".slot-" + std::to_string(id_slot) + ".bin";
+}
+
+static std::string slot_checkpoint_sidecar_path(const std::string & slot_state_filepath) {
+    return slot_state_filepath + ".ctxchk";
+}
+
+static bool slot_checkpoint_save_file(const std::string & slot_state_filepath, const server_prompt & prompt) {
+    const std::string sidecar_path = slot_checkpoint_sidecar_path(slot_state_filepath);
+    std::ofstream out(sidecar_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    constexpr uint32_t magic = 0x314B4853; // "SHK1"
+    const uint32_t n_checkpoints = (uint32_t) prompt.checkpoints.size();
+
+    out.write((const char *) &magic, sizeof(magic));
+    out.write((const char *) &n_checkpoints, sizeof(n_checkpoints));
+    if (!out.good()) {
+        return false;
+    }
+
+    for (const auto & cp : prompt.checkpoints) {
+        const int32_t pos_min = cp.pos_min;
+        const int32_t pos_max = cp.pos_max;
+        const uint64_t sz = (uint64_t) cp.data.size();
+        out.write((const char *) &pos_min, sizeof(pos_min));
+        out.write((const char *) &pos_max, sizeof(pos_max));
+        out.write((const char *) &sz, sizeof(sz));
+        if (sz > 0) {
+            out.write((const char *) cp.data.data(), (std::streamsize) sz);
+        }
+        if (!out.good()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool slot_checkpoint_load_file(const std::string & slot_state_filepath, server_prompt & prompt, size_t * loaded_count = nullptr) {
+    const std::string sidecar_path = slot_checkpoint_sidecar_path(slot_state_filepath);
+    std::ifstream in(sidecar_path, std::ios::binary);
+    if (!in.is_open()) {
+        if (loaded_count) {
+            *loaded_count = 0;
+        }
+        return false;
+    }
+
+    constexpr uint32_t magic_expected = 0x314B4853; // "SHK1"
+    uint32_t magic = 0;
+    uint32_t n_checkpoints = 0;
+    in.read((char *) &magic, sizeof(magic));
+    in.read((char *) &n_checkpoints, sizeof(n_checkpoints));
+    if (!in.good() || magic != magic_expected || n_checkpoints > 1024) {
+        if (loaded_count) {
+            *loaded_count = 0;
+        }
+        return false;
+    }
+
+    prompt.checkpoints.clear();
+    size_t restored = 0;
+
+    for (uint32_t i = 0; i < n_checkpoints; ++i) {
+        int32_t pos_min = 0;
+        int32_t pos_max = 0;
+        uint64_t sz = 0;
+        in.read((char *) &pos_min, sizeof(pos_min));
+        in.read((char *) &pos_max, sizeof(pos_max));
+        in.read((char *) &sz, sizeof(sz));
+        if (!in.good() || sz > (uint64_t) (512ull * 1024ull * 1024ull)) {
+            prompt.checkpoints.clear();
+            if (loaded_count) {
+                *loaded_count = 0;
+            }
+            return false;
+        }
+
+        server_prompt_checkpoint cp;
+        cp.pos_min = pos_min;
+        cp.pos_max = pos_max;
+        cp.data.resize((size_t) sz);
+        if (sz > 0) {
+            in.read((char *) cp.data.data(), (std::streamsize) sz);
+        }
+        if (!in.good()) {
+            prompt.checkpoints.clear();
+            if (loaded_count) {
+                *loaded_count = 0;
+            }
+            return false;
+        }
+
+        prompt.checkpoints.push_back(std::move(cp));
+        restored++;
+    }
+
+    if (loaded_count) {
+        *loaded_count = restored;
+    }
+    return true;
+}
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
@@ -545,6 +680,10 @@ public:
         }
     }
 
+    const common_params & get_params_base() const {
+        return params_base;
+    }
+
 private:
     // note: accessing these fields outside of this class is not thread-safe
     // use server_context methods instead
@@ -621,6 +760,21 @@ private:
         SRV_INF("loading model '%s'\n", params.model.path.c_str());
 
         params_base = params;
+
+        // Router child defaults to conservative lifecycle unless explicitly configured.
+        if (!params_base.slot_lifecycle_mode_explicit) {
+            const bool is_router_child = std::getenv("LLAMA_SERVER_ROUTER_PORT") != nullptr;
+            params_base.slot_lifecycle_mode = is_router_child ? 1 : 0;
+        }
+        SRV_INF(
+            "slot lifecycle mode = %s (%d), strict_status_code = %d, restore_min_tokens = %d, save_min_restored_tokens = %d, save_min_ratio = %.3f\n",
+            slot_lifecycle_mode_name(params_base.slot_lifecycle_mode).c_str(),
+            params_base.slot_lifecycle_mode,
+            params_base.slot_lifecycle_strict_status_code,
+            params_base.slot_lifecycle_restore_min_tokens,
+            params_base.slot_lifecycle_save_min_restored_tokens,
+            params_base.slot_lifecycle_save_min_ratio
+        );
 
         llama_init = common_init_from_params(params_base);
 
@@ -1794,9 +1948,14 @@ private:
 
                     const llama_tokens & tokens = slot->prompt.tokens.get_text_tokens();
                     const size_t nwrite = llama_state_seq_save_file(ctx, filepath.c_str(), slot->id, tokens.data(), token_count);
+                    const bool checkpoints_saved = slot_checkpoint_save_file(filepath, slot->prompt);
 
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
+
+                    if (!checkpoints_saved) {
+                        SRV_WRN("slot save sidecar write failed for slot=%d file=%s\n", id_slot, filepath.c_str());
+                    }
 
                     auto res = std::make_unique<server_task_result_slot_save_load>();
                     res->id       = task.id;
@@ -1841,9 +2000,20 @@ private:
                     tokens.resize(token_count);
                     slot->prompt.tokens.clear();
                     slot->prompt.tokens.insert(tokens);
+                    size_t n_checkpoints_loaded = 0;
+                    const bool checkpoints_loaded = slot_checkpoint_load_file(filepath, slot->prompt, &n_checkpoints_loaded);
+                    if (!checkpoints_loaded) {
+                        slot->prompt.checkpoints.clear();
+                    }
 
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
+
+                    if (checkpoints_loaded) {
+                        SRV_INF("slot restore checkpoint sidecar loaded: slot=%d checkpoints=%zu file=%s\n", id_slot, n_checkpoints_loaded, filepath.c_str());
+                    } else {
+                        SRV_WRN("slot restore checkpoint sidecar missing/invalid: slot=%d file=%s\n", id_slot, filepath.c_str());
+                    }
 
                     auto res = std::make_unique<server_task_result_slot_save_load>();
                     res->id       = task.id;
@@ -2955,8 +3125,155 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     auto res = create_response();
     auto completion_id = gen_chatcmplid();
     auto & rd = res->rd;
+    const auto & lifecycle_params = ctx_server.get_params_base();
+    const int lifecycle_mode = lifecycle_params.slot_lifecycle_mode;
+    const int lifecycle_n_parallel = lifecycle_params.n_parallel;
+    const std::string lifecycle_slot_save_path = lifecycle_params.slot_save_path;
+    const int lifecycle_restore_min_tokens = lifecycle_params.slot_lifecycle_restore_min_tokens;
+    const int lifecycle_save_min_restored_tokens = lifecycle_params.slot_lifecycle_save_min_restored_tokens;
+    const float lifecycle_save_min_ratio = lifecycle_params.slot_lifecycle_save_min_ratio;
+    const int lifecycle_strict_status_code = lifecycle_params.slot_lifecycle_strict_status_code;
+
+    struct slot_lifecycle_request_state {
+        bool enabled = false;
+        bool strict = false;
+        bool restore_attempted = false;
+        bool restore_success = false;
+        bool save_done = false;
+        bool save_skipped = false;
+
+        int32_t id_slot = -1;
+        size_t restored_tokens = 0;
+        size_t saved_tokens = 0;
+        int32_t prompt_tokens = -1;
+
+        std::string model_name;
+        std::string filename;
+        std::string filepath;
+        std::string save_decision = "disabled";
+    };
+
+    auto lifecycle = std::make_shared<slot_lifecycle_request_state>();
+    lifecycle->model_name = meta->model_name;
+
+    const auto make_strict_restore_error = [lifecycle_strict_status_code](const std::string & message) {
+        json err = format_error_response(message, ERROR_TYPE_UNAVAILABLE);
+        err["code"] = lifecycle_strict_status_code;
+        return err;
+    };
+
+    const auto run_slot_action = [&req, this](
+        bool is_restore,
+        int32_t id_slot,
+        const std::string & filename,
+        const std::string & filepath,
+        size_t & n_tokens_out,
+        std::string & err_out
+    ) -> bool {
+        server_response_reader rd_action(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
+        server_task task(is_restore ? SERVER_TASK_TYPE_SLOT_RESTORE : SERVER_TASK_TYPE_SLOT_SAVE);
+        task.id = rd_action.get_new_id();
+        task.slot_action.id_slot = id_slot;
+        task.slot_action.filename = filename;
+        task.slot_action.filepath = filepath;
+        rd_action.post_task(std::move(task), true);
+
+        auto result = rd_action.next(req.should_stop);
+        if (!result) {
+            err_out = "request terminated while waiting for slot action";
+            return false;
+        }
+        if (result->is_error()) {
+            err_out = result->to_json().dump();
+            return false;
+        }
+
+        auto * res_slot = dynamic_cast<server_task_result_slot_save_load *>(result.get());
+        if (res_slot == nullptr) {
+            err_out = "unexpected slot action result type";
+            return false;
+        }
+        n_tokens_out = res_slot->n_tokens;
+        return true;
+    };
 
     try {
+        if (type == SERVER_TASK_TYPE_COMPLETION
+            && lifecycle_mode > 0
+            && !lifecycle_slot_save_path.empty()) {
+            lifecycle->enabled = true;
+            lifecycle->strict = lifecycle_mode == 2;
+
+            int32_t requested_slot = json_value(data, "id_slot", -1);
+            if (requested_slot >= 0) {
+                lifecycle->id_slot = requested_slot;
+            } else if (lifecycle_n_parallel == 1) {
+                lifecycle->id_slot = 0;
+            }
+
+            if (lifecycle->id_slot < 0) {
+                lifecycle->enabled = false;
+                lifecycle->save_decision = "disabled_no_slot";
+                SRV_INF(
+                    "slot lifecycle disabled for request %s: id_slot is not specified and n_parallel = %d\n",
+                    completion_id.c_str(), lifecycle_n_parallel
+                );
+            } else {
+                lifecycle->filename = slot_lifecycle_default_filename(meta->model_name, lifecycle->id_slot);
+                lifecycle->filepath = lifecycle_slot_save_path + lifecycle->filename;
+                lifecycle->restore_attempted = true;
+
+                if (!std::filesystem::exists(lifecycle->filepath)) {
+                    lifecycle->restore_success = false;
+                    lifecycle->save_decision = "skip_save_restore_missing";
+                    SRV_INF(
+                        "slot lifecycle restore file missing for request %s, model=%s, id_slot=%d, file=%s\n",
+                        completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->filename.c_str()
+                    );
+                    if (lifecycle->strict) {
+                        res->error(make_strict_restore_error("slot lifecycle strict mode: restore file is missing"));
+                        return res;
+                    }
+                } else {
+                    size_t n_restored = 0;
+                    std::string restore_error;
+                    const bool restore_ok = run_slot_action(
+                        true,
+                        lifecycle->id_slot,
+                        lifecycle->filename,
+                        lifecycle->filepath,
+                        n_restored,
+                        restore_error
+                    );
+                    lifecycle->restored_tokens = n_restored;
+                    lifecycle->restore_success = restore_ok && n_restored >= (size_t) std::max(0, lifecycle_restore_min_tokens);
+                    if (!restore_ok) {
+                        lifecycle->save_decision = "skip_save_restore_error";
+                        SRV_WRN(
+                            "slot lifecycle restore failed for request %s, model=%s, id_slot=%d, file=%s, error=%s\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->filename.c_str(), restore_error.c_str()
+                        );
+                    } else if (!lifecycle->restore_success) {
+                        lifecycle->save_decision = "skip_save_restore_too_small";
+                        SRV_WRN(
+                            "slot lifecycle restore too small for request %s, model=%s, id_slot=%d, restored=%zu, min=%d\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, n_restored, lifecycle_restore_min_tokens
+                        );
+                    } else {
+                        SRV_INF(
+                            "slot lifecycle restore succeeded for request %s, model=%s, id_slot=%d, restored=%zu\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, n_restored
+                        );
+                    }
+
+                    if (lifecycle->strict && !lifecycle->restore_success) {
+                        res->error(make_strict_restore_error("slot lifecycle strict mode: restore validation failed"));
+                        return res;
+                    }
+                }
+            }
+        }
+
         std::vector<server_task> tasks;
 
         const auto & prompt = data.at("prompt");
@@ -3027,6 +3344,73 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 GGML_ASSERT(dynamic_cast<server_task_result_cmpl_final*>(res.get()) != nullptr);
                 arr.push_back(res->to_json());
             }
+
+            if (lifecycle->enabled && lifecycle->restore_success && !lifecycle->save_done && !lifecycle->save_skipped) {
+                for (auto & result_ptr : all_results.results) {
+                    auto * final_res = dynamic_cast<server_task_result_cmpl_final *>(result_ptr.get());
+                    if (final_res == nullptr) {
+                        continue;
+                    }
+                    if (lifecycle->id_slot >= 0 && final_res->id_slot != lifecycle->id_slot) {
+                        continue;
+                    }
+
+                    lifecycle->prompt_tokens = final_res->n_prompt_tokens;
+
+                    if (lifecycle->restored_tokens >= (size_t) std::max(0, lifecycle_save_min_restored_tokens)) {
+                        const float ratio = lifecycle->restored_tokens > 0
+                            ? (float) lifecycle->prompt_tokens / (float) lifecycle->restored_tokens
+                            : 0.0f;
+                        if (ratio < lifecycle_save_min_ratio) {
+                            lifecycle->save_skipped = true;
+                            lifecycle->save_decision = "skipped_guard_low_reuse";
+                            SRV_INF(
+                                "slot lifecycle save skipped for request %s, model=%s, id_slot=%d, prompt_tokens=%d, restored=%zu, ratio=%.4f, min_ratio=%.4f\n",
+                                completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                                lifecycle->prompt_tokens, lifecycle->restored_tokens, ratio, lifecycle_save_min_ratio
+                            );
+                            break;
+                        }
+                    }
+
+                    size_t n_saved = 0;
+                    std::string save_error;
+                    const bool save_ok = run_slot_action(
+                        false,
+                        lifecycle->id_slot,
+                        lifecycle->filename,
+                        lifecycle->filepath,
+                        n_saved,
+                        save_error
+                    );
+                    lifecycle->save_done = true;
+                    lifecycle->saved_tokens = n_saved;
+                    lifecycle->save_decision = save_ok ? "save_succeeded" : "save_failed";
+                    if (save_ok) {
+                        SRV_INF(
+                            "slot lifecycle save succeeded for request %s, model=%s, id_slot=%d, saved=%zu, restored=%zu, prompt_tokens=%d\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                            lifecycle->saved_tokens, lifecycle->restored_tokens, lifecycle->prompt_tokens
+                        );
+                    } else {
+                        SRV_WRN(
+                            "slot lifecycle save failed for request %s, model=%s, id_slot=%d, file=%s, error=%s\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                            lifecycle->filename.c_str(), save_error.c_str()
+                        );
+                    }
+                    break;
+                }
+            }
+
+            if (lifecycle->enabled) {
+                SRV_INF(
+                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
+                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
+                    lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                );
+            }
+
             GGML_ASSERT(!arr.empty() && "empty results");
             if (arr.size() == 1) {
                 // if single request, return single object instead of array
@@ -3075,7 +3459,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->next = [res_this = res.get(), res_type, &req](std::string & output) -> bool {
+        res->next = [res_this = res.get(), res_type, &req, completion_id, lifecycle, run_slot_action, lifecycle_save_min_restored_tokens, lifecycle_save_min_ratio](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
@@ -3138,6 +3522,72 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
+
+                    if (lifecycle->enabled) {
+                        if (auto * final_res = dynamic_cast<server_task_result_cmpl_final *>(result.get())) {
+                            if (!lifecycle->save_done && !lifecycle->save_skipped &&
+                                (lifecycle->id_slot < 0 || final_res->id_slot == lifecycle->id_slot)) {
+                                lifecycle->prompt_tokens = final_res->n_prompt_tokens;
+
+                                bool should_skip = false;
+                                if (!lifecycle->restore_success) {
+                                    should_skip = true;
+                                    lifecycle->save_decision = "skipped_restore_unsuccessful";
+                                } else if (lifecycle->restored_tokens >= (size_t) std::max(0, lifecycle_save_min_restored_tokens)) {
+                                    const float ratio = lifecycle->restored_tokens > 0
+                                        ? (float) lifecycle->prompt_tokens / (float) lifecycle->restored_tokens
+                                        : 0.0f;
+                                    if (ratio < lifecycle_save_min_ratio) {
+                                        should_skip = true;
+                                        lifecycle->save_decision = "skipped_guard_low_reuse";
+                                        SRV_INF(
+                                            "slot lifecycle save skipped for request %s, model=%s, id_slot=%d, prompt_tokens=%d, restored=%zu, ratio=%.4f, min_ratio=%.4f\n",
+                                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                                            lifecycle->prompt_tokens, lifecycle->restored_tokens, ratio, lifecycle_save_min_ratio
+                                        );
+                                    }
+                                }
+
+                                if (should_skip) {
+                                    lifecycle->save_skipped = true;
+                                } else {
+                                    size_t n_saved = 0;
+                                    std::string save_error;
+                                    const bool save_ok = run_slot_action(
+                                        false,
+                                        lifecycle->id_slot,
+                                        lifecycle->filename,
+                                        lifecycle->filepath,
+                                        n_saved,
+                                        save_error
+                                    );
+                                    lifecycle->save_done = true;
+                                    lifecycle->saved_tokens = n_saved;
+                                    lifecycle->save_decision = save_ok ? "save_succeeded" : "save_failed";
+                                    if (save_ok) {
+                                        SRV_INF(
+                                            "slot lifecycle save succeeded for request %s, model=%s, id_slot=%d, saved=%zu, restored=%zu, prompt_tokens=%d\n",
+                                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                                            lifecycle->saved_tokens, lifecycle->restored_tokens, lifecycle->prompt_tokens
+                                        );
+                                    } else {
+                                        SRV_WRN(
+                                            "slot lifecycle save failed for request %s, model=%s, id_slot=%d, file=%s, error=%s\n",
+                                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                                            lifecycle->filename.c_str(), save_error.c_str()
+                                        );
+                                    }
+                                }
+
+                                SRV_INF(
+                                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
+                                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
+                                    lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                                );
+                            }
+                        }
+                    }
+
                     json res_json = result->to_json();
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);
@@ -3391,6 +3841,7 @@ void server_routes::init_routes() {
 
         std::string tmpl_default = common_chat_templates_source(meta->chat_params.tmpls.get(), "");
         std::string tmpl_tools   = common_chat_templates_source(meta->chat_params.tmpls.get(), "tool_use");
+        const auto & effective_params = this->ctx_server.get_params_base();
 
         json props = {
             { "default_generation_settings", default_generation_settings_for_props },
@@ -3404,6 +3855,11 @@ void server_routes::init_routes() {
             { "endpoint_slots",              params.endpoint_slots },
             { "endpoint_props",              params.endpoint_props },
             { "endpoint_metrics",            params.endpoint_metrics },
+            { "slot_lifecycle_mode",         slot_lifecycle_mode_name(effective_params.slot_lifecycle_mode) },
+            { "slot_lifecycle_strict_status_code", effective_params.slot_lifecycle_strict_status_code },
+            { "slot_lifecycle_restore_min_tokens", effective_params.slot_lifecycle_restore_min_tokens },
+            { "slot_lifecycle_save_min_restored_tokens", effective_params.slot_lifecycle_save_min_restored_tokens },
+            { "slot_lifecycle_save_min_ratio", effective_params.slot_lifecycle_save_min_ratio },
             { "webui",                       params.webui },
             { "webui_settings",              meta->json_webui_settings },
             { "chat_template",               tmpl_default },

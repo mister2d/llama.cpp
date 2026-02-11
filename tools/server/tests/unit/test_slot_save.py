@@ -1,4 +1,5 @@
 import pytest
+import os
 from utils import *
 
 server = ServerPreset.tinyllama2()
@@ -31,6 +32,7 @@ def test_slot_save_restore():
     })
     assert res.status_code == 200
     assert res.body["n_saved"] == 84
+    assert os.path.exists("./tmp/slot1.bin.ctxchk")
 
     # Since we have cache, this should only process the last tokens
     res = server.make_request("POST", "/completion", data={
@@ -82,6 +84,27 @@ def test_slot_erase():
     assert res.status_code == 200
     assert match_regex("(Whiskers|Flana)+", res.body["content"])
     assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed
+
+
+def test_slot_lifecycle_strict_fails_when_restore_file_missing():
+    global server
+
+    missing_file = "./tmp/tinyllama-2.slot-0.bin"
+    if os.path.exists(missing_file):
+        os.remove(missing_file)
+
+    server.slot_lifecycle = "strict"
+    server.slot_lifecycle_strict_status_code = 503
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "hello",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+
+    assert res.status_code == 503
+    assert res.body["error"]["type"] == "unavailable_error"
 
     # erase slot 1
     res = server.make_request("POST", "/slots/1?action=erase")

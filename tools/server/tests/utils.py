@@ -101,6 +101,11 @@ class ServerProcess:
     mmproj_url: str | None = None
     media_path: str | None = None
     sleep_idle_seconds: int | None = None
+    slot_lifecycle: Literal["auto", "off", "conservative", "strict"] | None = None
+    slot_lifecycle_strict_status_code: int | None = None
+    slot_lifecycle_restore_min_tokens: int | None = None
+    slot_lifecycle_save_min_restored_tokens: int | None = None
+    slot_lifecycle_save_min_ratio: float | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -233,6 +238,16 @@ class ServerProcess:
             server_args.extend(["--media-path", self.media_path])
         if self.sleep_idle_seconds is not None:
             server_args.extend(["--sleep-idle-seconds", self.sleep_idle_seconds])
+        if self.slot_lifecycle is not None:
+            server_args.extend(["--slot-lifecycle", self.slot_lifecycle])
+        if self.slot_lifecycle_strict_status_code is not None:
+            server_args.extend(["--slot-lifecycle-strict-status-code", self.slot_lifecycle_strict_status_code])
+        if self.slot_lifecycle_restore_min_tokens is not None:
+            server_args.extend(["--slot-lifecycle-restore-min-tokens", self.slot_lifecycle_restore_min_tokens])
+        if self.slot_lifecycle_save_min_restored_tokens is not None:
+            server_args.extend(["--slot-lifecycle-save-min-restored-tokens", self.slot_lifecycle_save_min_restored_tokens])
+        if self.slot_lifecycle_save_min_ratio is not None:
+            server_args.extend(["--slot-lifecycle-save-min-ratio", self.slot_lifecycle_save_min_ratio])
 
         args = [str(arg) for arg in [server_path, *server_args]]
         print(f"tests: starting server with: {' '.join(args)}")

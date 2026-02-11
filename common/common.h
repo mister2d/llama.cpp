@@ -564,6 +564,18 @@ struct common_params {
 
     float slot_prompt_similarity = 0.1f;
 
+    // server-side slot lifecycle management
+    // -1 = auto (router child defaults to conservative, otherwise off)
+    //  0 = off
+    //  1 = conservative
+    //  2 = strict
+    int32_t slot_lifecycle_mode = -1;
+    bool slot_lifecycle_mode_explicit = false;
+    int32_t slot_lifecycle_strict_status_code = 503;
+    int32_t slot_lifecycle_restore_min_tokens = 1;
+    int32_t slot_lifecycle_save_min_restored_tokens = 4096;
+    float   slot_lifecycle_save_min_ratio = 0.5f;
+
     // batched-bench params
     bool is_pp_shared   = false;
     bool is_tg_separate = false;
