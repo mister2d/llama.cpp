@@ -3260,6 +3260,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         size_t restored_tokens = 0;
         size_t saved_tokens = 0;
         int32_t prompt_tokens = -1;
+        int32_t cache_reused_tokens = -1;
+        bool restore_effective = false;
 
         std::string model_name;
         std::string filename;
@@ -3487,6 +3489,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     }
 
                     lifecycle->prompt_tokens = final_res->n_prompt_tokens;
+                    lifecycle->cache_reused_tokens = final_res->timings.cache_n;
+                    lifecycle->restore_effective = lifecycle->restore_success && final_res->timings.cache_n > 0;
 
                     if (lifecycle->restore_success && lifecycle->restored_tokens > 0 && final_res->timings.cache_n == 0) {
                         lifecycle->save_skipped = true;
@@ -3548,9 +3552,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
             if (lifecycle->enabled) {
                 SRV_INF(
-                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_quality=%s restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
-                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
-                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_effective=%d restore_quality=%s restored=%zu prompt_tokens=%d cache_n=%d save_decision=%s saved=%zu\n",
+                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success, lifecycle->restore_effective,
+                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->cache_reused_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
                 );
             }
 
@@ -3561,9 +3565,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         {"enabled", lifecycle->enabled},
                         {"id_slot", lifecycle->id_slot},
                         {"restore_success", lifecycle->restore_success},
+                        {"restore_effective", lifecycle->restore_effective},
                         {"restore_quality", lifecycle->restore_quality},
                         {"restored_tokens", lifecycle->restored_tokens},
                         {"prompt_tokens", lifecycle->prompt_tokens},
+                        {"cache_reused_tokens", lifecycle->cache_reused_tokens},
                         {"save_decision", lifecycle->save_decision},
                         {"saved_tokens", lifecycle->saved_tokens},
                     };
@@ -3683,6 +3689,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                             if (!lifecycle->save_done && !lifecycle->save_skipped &&
                                 (lifecycle->id_slot < 0 || final_res->id_slot == lifecycle->id_slot)) {
                                 lifecycle->prompt_tokens = final_res->n_prompt_tokens;
+                                lifecycle->cache_reused_tokens = final_res->timings.cache_n;
+                                lifecycle->restore_effective = lifecycle->restore_success && final_res->timings.cache_n > 0;
 
                                 bool should_skip = false;
                                 if (!lifecycle->restore_success && !lifecycle->bootstrap_save_allowed) {
@@ -3744,9 +3752,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                                 }
 
                                 SRV_INF(
-                                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_quality=%s restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
-                                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
-                                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_effective=%d restore_quality=%s restored=%zu prompt_tokens=%d cache_n=%d save_decision=%s saved=%zu\n",
+                                    completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success, lifecycle->restore_effective,
+                                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->cache_reused_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
                                 );
                             }
                         }
@@ -3758,9 +3766,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                             {"enabled", lifecycle->enabled},
                             {"id_slot", lifecycle->id_slot},
                             {"restore_success", lifecycle->restore_success},
+                            {"restore_effective", lifecycle->restore_effective},
                             {"restore_quality", lifecycle->restore_quality},
                             {"restored_tokens", lifecycle->restored_tokens},
                             {"prompt_tokens", lifecycle->prompt_tokens},
+                            {"cache_reused_tokens", lifecycle->cache_reused_tokens},
                             {"save_decision", lifecycle->save_decision},
                             {"saved_tokens", lifecycle->saved_tokens},
                         };

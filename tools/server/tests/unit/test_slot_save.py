@@ -146,6 +146,8 @@ def test_slot_lifecycle_conservative_emits_restore_metadata_and_skip_reason():
     assert res.status_code == 200
     assert "slot_lifecycle" in res.body
     assert res.body["slot_lifecycle"]["restore_success"] is True
+    assert "cache_reused_tokens" in res.body["slot_lifecycle"]
+    assert "restore_effective" in res.body["slot_lifecycle"]
     assert res.body["slot_lifecycle"]["save_decision"] == "skipped_guard_low_reuse"
 
 
@@ -173,6 +175,7 @@ def test_slot_lifecycle_conservative_bootstraps_when_restore_missing():
     assert "slot_lifecycle" in res.body
     assert res.body["slot_lifecycle"]["restore_success"] is False
     assert res.body["slot_lifecycle"]["restore_quality"] == "missing"
+    assert res.body["slot_lifecycle"]["restore_effective"] is False
     assert res.body["slot_lifecycle"]["save_decision"] == "save_succeeded"
     assert os.path.exists(default_slot_file)
 
@@ -216,4 +219,6 @@ def test_slot_lifecycle_stream_includes_final_metadata():
     lifecycle = lifecycle_chunks[-1]["slot_lifecycle"]
     assert lifecycle["enabled"] is True
     assert lifecycle["restore_success"] is True
+    assert "cache_reused_tokens" in lifecycle
+    assert "restore_effective" in lifecycle
     assert lifecycle["save_decision"] == "skipped_guard_low_reuse"
