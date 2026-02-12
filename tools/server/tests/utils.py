@@ -7,6 +7,7 @@ import subprocess
 import os
 import re
 import json
+import socket
 from json import JSONDecodeError
 import sys
 import requests
@@ -118,6 +119,14 @@ class ServerProcess:
         if "PORT" in os.environ:
             self.server_port = int(os.environ["PORT"])
         self.external_server = "DEBUG_EXTERNAL" in os.environ
+        if "PORT" not in os.environ and not self.external_server:
+            self.server_port = self._find_free_local_port()
+
+    @staticmethod
+    def _find_free_local_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
 
     def start(self, timeout_seconds: int | None = DEFAULT_HTTP_TIMEOUT) -> None:
         if self.external_server:
