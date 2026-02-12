@@ -1099,6 +1099,36 @@ When `diagnostics=1` is set, the response includes both per-slot state and a lif
 }
 ```
 
+### Router lifecycle guidance (streaming-first)
+
+For router deployments that use streaming by default, enable conservative server-side lifecycle and persist slot state:
+
+```bash
+llama-server \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --slot-save-path /var/lib/llama/slots \
+  --slot-lifecycle auto \
+  --slot-lifecycle-save-min-restored-tokens 4096 \
+  --slot-lifecycle-save-min-ratio 0.5
+```
+
+Notes:
+- In router child processes, `--slot-lifecycle auto` resolves to `conservative`.
+- Conservative mode protects state files by skipping save when restore appears ineffective.
+- Use `--slot-lifecycle strict` to fail requests when restore validation fails (status code controlled by `--slot-lifecycle-strict-status-code`, default `503`).
+
+### SWA and context checkpoints
+
+SWA / hybrid models are sensitive to checkpoint continuity. For better restore reuse quality:
+- Keep `--ctx-checkpoints` enabled (default `8`).
+- Do not disable checkpoint creation in lifecycle-enabled router workflows.
+- Consider `--swa-full` when running long-context SWA models and validating restore effectiveness.
+
+When diagnosing reuse behavior, inspect:
+- `/slots?diagnostics=1` for lifecycle counters and recent per-slot lifecycle state.
+- restore action response fields `n_restored`, `n_checkpoints`, and `restore_quality`.
+
 ### GET `/lora-adapters`: Get list of all LoRA adapters
 
 This endpoint returns the loaded LoRA adapters. You can add adapters using `--lora` when starting the server, for example: `--lora my_adapter_1.gguf --lora my_adapter_2.gguf ...`

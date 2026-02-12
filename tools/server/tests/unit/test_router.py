@@ -1,5 +1,6 @@
 import pytest
 from utils import *
+import tempfile
 
 server: ServerProcess
 
@@ -9,16 +10,36 @@ def create_server():
     server = ServerPreset.router()
 
 
+def _get_router_models() -> list[str]:
+    res = server.make_request("GET", "/models")
+    assert res.status_code == 200
+    data = res.body.get("data", [])
+    models: list[str] = []
+    for item in data:
+        model_id = item.get("id") or item.get("model")
+        if isinstance(model_id, str) and model_id:
+            models.append(model_id)
+    return models
+
+
+def _require_router_model() -> str:
+    models = _get_router_models()
+    if not models:
+        pytest.skip("router model registry is empty in this environment")
+    return models[0]
+
+
 @pytest.mark.parametrize(
-    "model,success",
+    "requested_model,success",
     [
-        ("ggml-org/tinygemma3-GGUF:Q8_0", True),
+        ("__AUTO__", True),
         ("non-existent/model", False),
     ]
 )
-def test_router_chat_completion_stream(model: str, success: bool):
+def test_router_chat_completion_stream(requested_model: str, success: bool):
     global server
     server.start()
+    model = _require_router_model() if requested_model == "__AUTO__" else requested_model
     content = ""
     ex: ServerError | None = None
     try:
@@ -86,7 +107,7 @@ def _load_model_and_wait(
 def test_router_unload_model():
     global server
     server.start()
-    model_id = "ggml-org/tinygemma3-GGUF:Q8_0"
+    model_id = _require_router_model()
 
     _load_model_and_wait(model_id)
 
@@ -101,11 +122,9 @@ def test_router_models_max_evicts_lru():
     server.models_max = 2
     server.start()
 
-    candidate_models = [
-        "ggml-org/tinygemma3-GGUF:Q8_0",
-        "ggml-org/test-model-stories260K",
-        "ggml-org/test-model-stories260K-infill",
-    ]
+    candidate_models = _get_router_models()
+    if len(candidate_models) < 3:
+        pytest.skip("need at least three router models to validate LRU eviction")
 
     # Load only the first 2 models to fill the cache
     first, second, third = candidate_models[:3]
@@ -129,7 +148,7 @@ def test_router_no_models_autoload():
     global server
     server.no_models_autoload = True
     server.start()
-    model_id = "ggml-org/tinygemma3-GGUF:Q8_0"
+    model_id = _require_router_model()
 
     res = server.make_request(
         "POST",
@@ -162,14 +181,7 @@ def test_router_default_slot_lifecycle_mode_is_conservative():
     global server
     server.start()
 
-    models = server.make_request("GET", "/models")
-    assert models.status_code == 200
-    data = models.body.get("data", [])
-    if not data:
-        pytest.skip("router model registry is empty in this environment")
-
-    model_id = data[0].get("id") or data[0].get("model")
-    assert model_id is not None
+    model_id = _require_router_model()
 
     _load_model_and_wait(model_id)
 
@@ -183,7 +195,7 @@ def test_router_api_key_required():
     server.api_key = "sk-router-secret"
     server.start()
 
-    model_id = "ggml-org/tinygemma3-GGUF:Q8_0"
+    model_id = _require_router_model()
     auth_headers = {"Authorization": f"Bearer {server.api_key}"}
 
     res = server.make_request(
@@ -212,3 +224,46 @@ def test_router_api_key_required():
     )
     assert authed.status_code == 200
     assert "error" not in authed.body
+
+
+def test_router_lifecycle_auto_restore_after_idle_unload():
+    global server
+
+    with tempfile.TemporaryDirectory() as slot_dir:
+        server.slot_lifecycle = "conservative"
+        server.slot_save_path = slot_dir
+        server.sleep_idle_seconds = 1
+        server.start()
+        model_id = _require_router_model()
+
+        warmup = server.make_request(
+            "POST",
+            "/v1/chat/completions",
+            data={
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Write one short sentence about caching."}],
+                "max_tokens": 8,
+                "stream": False,
+                "cache_prompt": True,
+            },
+        )
+        assert warmup.status_code == 200
+
+        # Let the child model go idle and unload, and allow async save to complete.
+        time.sleep(3)
+
+        second = server.make_request(
+            "POST",
+            "/v1/chat/completions",
+            data={
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Write one short sentence about caching."}],
+                "max_tokens": 8,
+                "stream": False,
+                "cache_prompt": True,
+            },
+        )
+        assert second.status_code == 200
+        lifecycle = second.body.get("slot_lifecycle")
+        assert isinstance(lifecycle, dict)
+        assert lifecycle.get("restore_success") is True
