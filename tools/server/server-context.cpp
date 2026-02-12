@@ -3734,8 +3734,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     }
 
                     json res_json = result->to_json();
-                    if (lifecycle->enabled && dynamic_cast<server_task_result_cmpl_final *>(result.get()) != nullptr && res_json.is_object()) {
-                        res_json["slot_lifecycle"] = {
+                    if (lifecycle->enabled && dynamic_cast<server_task_result_cmpl_final *>(result.get()) != nullptr) {
+                        const json lifecycle_json = {
                             {"enabled", lifecycle->enabled},
                             {"id_slot", lifecycle->id_slot},
                             {"restore_success", lifecycle->restore_success},
@@ -3745,6 +3745,25 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                             {"save_decision", lifecycle->save_decision},
                             {"saved_tokens", lifecycle->saved_tokens},
                         };
+
+                        auto inject_lifecycle = [&](json & target) {
+                            if (!target.is_object()) {
+                                return;
+                            }
+                            // Anthropic/OAI Responses SSE wrappers carry payload under "data".
+                            if (target.contains("data") && target["data"].is_object()) {
+                                target["data"]["slot_lifecycle"] = lifecycle_json;
+                                return;
+                            }
+                            target["slot_lifecycle"] = lifecycle_json;
+                        };
+
+                        if (res_json.is_object()) {
+                            inject_lifecycle(res_json);
+                        } else if (res_json.is_array() && !res_json.empty()) {
+                            auto & last_item = res_json.back();
+                            inject_lifecycle(last_item);
+                        }
                     }
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);

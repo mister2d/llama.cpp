@@ -175,3 +175,45 @@ def test_slot_lifecycle_conservative_bootstraps_when_restore_missing():
     assert res.body["slot_lifecycle"]["restore_quality"] == "missing"
     assert res.body["slot_lifecycle"]["save_decision"] == "save_succeeded"
     assert os.path.exists(default_slot_file)
+
+
+def test_slot_lifecycle_stream_includes_final_metadata():
+    global server
+    server.slot_lifecycle = "conservative"
+    server.slot_lifecycle_save_min_restored_tokens = 1
+    server.slot_lifecycle_save_min_ratio = 0.5
+    server.start()
+
+    default_slot_file = "tinyllama-2.slot-0.bin"
+
+    # Prime and persist slot state used by automatic restore.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+    res = server.make_request("POST", "/slots/0?action=save", data={
+        "filename": default_slot_file,
+    })
+    assert res.status_code == 200
+    assert res.body["n_saved"] > 0
+
+    # Erase in-memory slot so lifecycle restore must execute.
+    res = server.make_request("POST", "/slots/0?action=erase")
+    assert res.status_code == 200
+
+    stream_chunks = list(server.make_stream_request("POST", "/completion", data={
+        "prompt": "Hi",
+        "id_slot": 0,
+        "cache_prompt": True,
+        "stream": True,
+    }))
+    assert stream_chunks
+
+    lifecycle_chunks = [c for c in stream_chunks if "slot_lifecycle" in c]
+    assert lifecycle_chunks, "expected slot_lifecycle in final stream payload"
+    lifecycle = lifecycle_chunks[-1]["slot_lifecycle"]
+    assert lifecycle["enabled"] is True
+    assert lifecycle["restore_success"] is True
+    assert lifecycle["save_decision"] == "skipped_guard_low_reuse"
