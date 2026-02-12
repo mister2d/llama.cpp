@@ -573,7 +573,7 @@ struct common_params {
     bool slot_lifecycle_mode_explicit = false;
     int32_t slot_lifecycle_strict_status_code = 503;
     int32_t slot_lifecycle_restore_min_tokens = 1;
-    int32_t slot_lifecycle_save_min_restored_tokens = 4096;
+    int32_t slot_lifecycle_save_min_restored_tokens = 1;
     float   slot_lifecycle_save_min_ratio = 0.5f;
 
     // batched-bench params

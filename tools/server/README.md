@@ -208,7 +208,7 @@ For the ful list of features, please refer to [server's changelog](https://githu
 | `--slot-lifecycle MODE` | server-side slot lifecycle mode: `auto|off|conservative|strict` (default: `auto`; router child resolves to `conservative`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE) |
 | `--slot-lifecycle-strict-status-code N` | HTTP status code for strict lifecycle failures (default: `503`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE_STRICT_STATUS_CODE) |
 | `--slot-lifecycle-restore-min-tokens N` | minimum restored token count required to treat restore as successful (default: `1`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE_RESTORE_MIN_TOKENS) |
-| `--slot-lifecycle-save-min-restored-tokens N` | minimum restored token count before applying save guard ratio checks (default: `4096`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE_SAVE_MIN_RESTORED_TOKENS) |
+| `--slot-lifecycle-save-min-restored-tokens N` | minimum restored token count before applying save guard ratio checks (default: `1`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE_SAVE_MIN_RESTORED_TOKENS) |
 | `--slot-lifecycle-save-min-ratio RATIO` | minimum `prompt_tokens/restored_tokens` ratio required before save in conservative mode (default: `0.5`)<br/>(env: LLAMA_ARG_SLOT_LIFECYCLE_SAVE_MIN_RATIO) |
 | `--media-path PATH` | directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled) |
 | `--models-dir PATH` | directory containing models for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_DIR) |
@@ -1109,7 +1109,7 @@ llama-server \
   --port 8001 \
   --slot-save-path /var/lib/llama/slots \
   --slot-lifecycle auto \
-  --slot-lifecycle-save-min-restored-tokens 4096 \
+  --slot-lifecycle-save-min-restored-tokens 1 \
   --slot-lifecycle-save-min-ratio 0.5
 ```
 
