@@ -190,6 +190,19 @@ def test_router_default_slot_lifecycle_mode_is_conservative():
     assert props.body["slot_lifecycle_mode"] == "conservative"
 
 
+def test_router_explicit_slot_lifecycle_off_is_propagated():
+    global server
+    server.slot_lifecycle = "off"
+    server.start()
+
+    model_id = _require_router_model()
+    _load_model_and_wait(model_id)
+
+    props = server.make_request("GET", f"/props?model={model_id}")
+    assert props.status_code == 200
+    assert props.body["slot_lifecycle_mode"] == "off"
+
+
 def test_router_api_key_required():
     global server
     server.api_key = "sk-router-secret"

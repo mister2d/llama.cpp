@@ -45,6 +45,16 @@ extern char **environ;
 // ref: https://github.com/ggml-org/llama.cpp/issues/17862
 #define CHILD_ADDR "127.0.0.1"
 
+static const char * slot_lifecycle_mode_to_arg(int32_t mode) {
+    switch (mode) {
+        case -1: return "auto";
+        case  0: return "off";
+        case  1: return "conservative";
+        case  2: return "strict";
+        default: return "auto";
+    }
+}
+
 static std::filesystem::path get_server_exec_path() {
 #if defined(_WIN32)
     wchar_t buf[32768] = { 0 };  // Large buffer to handle long paths
@@ -479,6 +489,23 @@ void server_models::load(const std::string & name) {
         std::vector<std::string> child_args = inst.meta.args; // copy
         std::vector<std::string> child_env  = base_env; // copy
         child_env.push_back("LLAMA_SERVER_ROUTER_PORT=" + std::to_string(base_params.port));
+
+        // Preserve router-level lifecycle and idle policies in child servers.
+        // This ensures explicit CLI args (for example --slot-lifecycle off) are honored.
+        child_args.push_back("--sleep-idle-seconds");
+        child_args.push_back(std::to_string(base_params.sleep_idle_seconds));
+        if (base_params.slot_lifecycle_mode_explicit) {
+            child_args.push_back("--slot-lifecycle");
+            child_args.push_back(slot_lifecycle_mode_to_arg(base_params.slot_lifecycle_mode));
+            child_args.push_back("--slot-lifecycle-strict-status-code");
+            child_args.push_back(std::to_string(base_params.slot_lifecycle_strict_status_code));
+            child_args.push_back("--slot-lifecycle-restore-min-tokens");
+            child_args.push_back(std::to_string(base_params.slot_lifecycle_restore_min_tokens));
+            child_args.push_back("--slot-lifecycle-save-min-restored-tokens");
+            child_args.push_back(std::to_string(base_params.slot_lifecycle_save_min_restored_tokens));
+            child_args.push_back("--slot-lifecycle-save-min-ratio");
+            child_args.push_back(std::to_string(base_params.slot_lifecycle_save_min_ratio));
+        }
 
         SRV_INF("%s", "spawning server instance with args:\n");
         for (const auto & arg : child_args) {
