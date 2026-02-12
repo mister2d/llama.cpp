@@ -110,6 +110,7 @@ class ServerProcess:
 
     # session variables
     process: subprocess.Popen | None = None
+    _port_from_env: bool = False
 
     def __init__(self):
         if "N_GPU_LAYERS" in os.environ:
@@ -118,6 +119,7 @@ class ServerProcess:
             self.debug = True
         if "PORT" in os.environ:
             self.server_port = int(os.environ["PORT"])
+            self._port_from_env = True
         self.external_server = "DEBUG_EXTERNAL" in os.environ
         if "PORT" not in os.environ and not self.external_server:
             self.server_port = self._find_free_local_port()
@@ -258,45 +260,63 @@ class ServerProcess:
         if self.slot_lifecycle_save_min_ratio is not None:
             server_args.extend(["--slot-lifecycle-save-min-ratio", self.slot_lifecycle_save_min_ratio])
 
-        args = [str(arg) for arg in [server_path, *server_args]]
-        print(f"tests: starting server with: {' '.join(args)}")
-
         flags = 0
         if "nt" == os.name:
             flags |= subprocess.DETACHED_PROCESS
             flags |= subprocess.CREATE_NEW_PROCESS_GROUP
             flags |= subprocess.CREATE_NO_WINDOW
 
-        self.process = subprocess.Popen(
-            [str(arg) for arg in [server_path, *server_args]],
-            creationflags=flags,
-            stdout=sys.stdout,
-            stderr=sys.stdout,
-            env={**os.environ, "LLAMA_CACHE": "tmp"} if "LLAMA_CACHE" not in os.environ else None,
-        )
-        server_instances.add(self)
+        # Some environments export PORT=8080 globally, which can collide with an already-running server.
+        # Retry once on an ephemeral localhost port if startup dies before health is reachable.
+        attempts_remaining = 2 if self._port_from_env else 1
+        while attempts_remaining > 0:
+            attempts_remaining -= 1
+            server_args_with_port = list(server_args)
+            server_args_with_port[3] = str(self.server_port)
+            args = [str(arg) for arg in [server_path, *server_args_with_port]]
+            print(f"tests: starting server with: {' '.join(args)}")
 
-        print(f"server pid={self.process.pid}, pytest pid={os.getpid()}")
+            self.process = subprocess.Popen(
+                args,
+                creationflags=flags,
+                stdout=sys.stdout,
+                stderr=sys.stdout,
+                env={**os.environ, "LLAMA_CACHE": "tmp"} if "LLAMA_CACHE" not in os.environ else None,
+            )
+            server_instances.add(self)
 
-        # wait for server to start
-        start_time = time.time()
-        while time.time() - start_time < timeout_seconds:
-            try:
-                response = self.make_request("GET", "/health", headers={
-                    "Authorization": f"Bearer {self.api_key}" if self.api_key else None
-                })
-                if response.status_code == 200:
-                    self.ready = True
-                    return  # server is ready
-            except Exception as e:
-                pass
-            # Check if process died
-            if self.process.poll() is not None:
+            print(f"server pid={self.process.pid}, pytest pid={os.getpid()}")
+
+            start_time = time.time()
+            while time.time() - start_time < timeout_seconds:
+                try:
+                    response = self.make_request("GET", "/health", headers={
+                        "Authorization": f"Bearer {self.api_key}" if self.api_key else None
+                    })
+                    if response.status_code == 200:
+                        self.ready = True
+                        return
+                except Exception:
+                    pass
+
+                if self.process.poll() is not None:
+                    break
+
+                print("Waiting for server to start...")
+                time.sleep(0.5)
+
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process = None
+                raise TimeoutError(f"Server did not start within {timeout_seconds} seconds")
+
+            if attempts_remaining == 0:
                 raise RuntimeError(f"Server process died with return code {self.process.returncode}")
 
-            print(f"Waiting for server to start...")
-            time.sleep(0.5)
-        raise TimeoutError(f"Server did not start within {timeout_seconds} seconds")
+            self.server_port = self._find_free_local_port()
+            print(f"tests: retrying server startup on free port {self.server_port}")
+
+        raise RuntimeError("Failed to start server")
 
     def stop(self) -> None:
         if self.external_server:
