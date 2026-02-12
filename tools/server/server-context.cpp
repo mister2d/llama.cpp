@@ -805,8 +805,9 @@ private:
 
         params_base = params;
 
-        // Router child defaults to conservative lifecycle unless explicitly configured.
-        if (!params_base.slot_lifecycle_mode_explicit) {
+        // Resolve auto lifecycle mode to an effective mode at load time.
+        // Router child defaults to conservative; non-router defaults to off.
+        if (params_base.slot_lifecycle_mode < 0) {
             const bool is_router_child = std::getenv("LLAMA_SERVER_ROUTER_PORT") != nullptr;
             params_base.slot_lifecycle_mode = is_router_child ? 1 : 0;
         }
