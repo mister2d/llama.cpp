@@ -21,6 +21,23 @@ Set of LLM REST APIs and a web UI to interact with llama.cpp.
 
 For the ful list of features, please refer to [server's changelog](https://github.com/ggml-org/llama.cpp/issues/9291)
 
+## Release Notes
+
+### 2026-02 slot lifecycle hardening (router-focused)
+
+- Added server-managed slot lifecycle mode defaults for router children (`conservative` by default when mode is `auto`).
+- Added request-level lifecycle metadata in completion responses (including streaming final chunks):
+  - `restore_success`
+  - `restore_effective`
+  - `restore_quality`
+  - `cache_reused_tokens`
+  - `save_decision`
+- Added conservative save guards to protect known-good state files:
+  - skip save when restore did not lead to cache reuse (`cache_n == 0`)
+  - skip save on low prompt/restored ratio (`save_min_ratio`)
+- Added checkpoint sidecar persistence (`.ctxchk`) to improve restore quality for SWA/hybrid scenarios.
+- Maintained compatibility with legacy slot files without sidecar data; restores are classified as `partial_legacy`.
+
 ## Usage
 
 <!-- HELP_START -->

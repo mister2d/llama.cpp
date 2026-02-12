@@ -4,9 +4,21 @@ from utils import *
 
 server = ServerPreset.tinyllama2()
 
+
+def _skip_if_offline_tinyllama_missing() -> None:
+    if os.environ.get("SKIP_SERVER_PRESET_PRELOAD", "").lower() not in {"1", "true", "yes"}:
+        return
+    model_path = "./tmp/ggml-org_test-model-stories260K_stories260K-f32.gguf"
+    if not os.path.exists(model_path):
+        pytest.skip(
+            "tinyllama test model not cached locally; unset SKIP_SERVER_PRESET_PRELOAD or preload presets first"
+        )
+
+
 @pytest.fixture(autouse=True)
 def create_server():
     global server
+    _skip_if_offline_tinyllama_missing()
     server = ServerPreset.tinyllama2()
     server.slot_save_path = "./tmp"
     server.temperature = 0.0
@@ -73,6 +85,47 @@ def test_slot_save_restore():
     assert res.status_code == 200
     assert match_regex("(Jack|said)+", res.body["content"])
     assert res.body["timings"]["prompt_n"] == 1
+
+
+def test_slot_restore_legacy_without_checkpoint_sidecar():
+    global server
+    server.start()
+
+    # Prime slot 1 and save it with sidecar data.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    filename = "slot-legacy.bin"
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": filename,
+    })
+    assert res.status_code == 200
+    assert res.body["n_saved"] > 0
+    assert os.path.exists(f"./tmp/{filename}.ctxchk")
+
+    # Force legacy restore path by removing checkpoint sidecar.
+    os.remove(f"./tmp/{filename}.ctxchk")
+    assert not os.path.exists(f"./tmp/{filename}.ctxchk")
+
+    # Restore should succeed with partial_legacy quality and still reuse prompt cache.
+    res = server.make_request("POST", "/slots/0?action=restore", data={
+        "filename": filename,
+    })
+    assert res.status_code == 200
+    assert res.body["n_restored"] > 0
+    assert res.body["restore_quality"] == "partial_legacy"
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of Germany?",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+    assert res.body["timings"]["cache_n"] > 0
 
 
 def test_slot_erase():
