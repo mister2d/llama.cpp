@@ -479,7 +479,8 @@ class ServerPreset:
         server = ServerProcess()
         server.offline = True # will be downloaded by load_all()
         server.model_hf_repo = "ggml-org/test-model-stories260K"
-        server.model_hf_file = None
+        # Keep this explicit so offline mode does not depend on remote preset manifests.
+        server.model_hf_file = "stories260K-f32.gguf"
         server.model_alias = "tinyllama-2"
         server.n_ctx = 512
         server.n_batch = 32

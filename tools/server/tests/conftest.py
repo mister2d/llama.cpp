@@ -1,4 +1,5 @@
 import pytest
+import os
 from utils import *
 
 
@@ -18,4 +19,6 @@ def stop_server_after_each_test():
 @pytest.fixture(scope="module", autouse=True)
 def do_something():
     # this will be run once per test session, before any tests
+    if os.environ.get("SKIP_SERVER_PRESET_PRELOAD", "").lower() in {"1", "true", "yes"}:
+        return
     ServerPreset.load_all()

@@ -356,7 +356,7 @@ static int common_download_file_single_online(const std::string        & url,
                 LOG_INF("%s: Using cached file (HEAD failed): %s\n", __func__, path.c_str());
                 return 304; // 304 Not Modified - fake cached response
             }
-            return head->status; // cannot use cached file, return raw status code
+            return head ? head->status : -1; // cannot use cached file, return raw status code
             // TODO: maybe retry only on certain codes
         }
 

@@ -110,12 +110,11 @@ def test_slot_lifecycle_strict_fails_when_restore_file_missing():
     res = server.make_request("POST", "/slots/1?action=erase")
     assert res.status_code == 200
 
-    # re-run the same prompt, it should process all tokens again
+    # strict lifecycle applies to every slot: missing restore file should still fail
     res = server.make_request("POST", "/completion", data={
         "prompt": "What is the capital of France?",
         "id_slot": 1,
         "cache_prompt": True,
     })
-    assert res.status_code == 200
-    assert match_regex("(Whiskers|Flana)+", res.body["content"])
-    assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed
+    assert res.status_code == 503
+    assert res.body["error"]["type"] == "unavailable_error"

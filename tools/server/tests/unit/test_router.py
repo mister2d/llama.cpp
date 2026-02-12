@@ -161,7 +161,15 @@ def test_router_no_models_autoload():
 def test_router_default_slot_lifecycle_mode_is_conservative():
     global server
     server.start()
-    model_id = "ggml-org/tinygemma3-GGUF:Q8_0"
+
+    models = server.make_request("GET", "/models")
+    assert models.status_code == 200
+    data = models.body.get("data", [])
+    if not data:
+        pytest.skip("router model registry is empty in this environment")
+
+    model_id = data[0].get("id") or data[0].get("model")
+    assert model_id is not None
 
     _load_model_and_wait(model_id)
 
