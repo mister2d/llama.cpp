@@ -70,6 +70,34 @@ def test_server_slots():
     assert "n_slot_restore_total" in res_diag.body["diagnostics"]
 
 
+def test_server_metrics_include_lifecycle_counters():
+    global server
+    server.server_metrics = True
+    server.slot_save_path = "./tmp"
+    server.start()
+
+    # Create some slot activity so lifecycle counters are emitted with non-zero values.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/0?action=save", data={"filename": "metrics-slot.bin"})
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/0?action=restore", data={"filename": "metrics-slot.bin"})
+    assert res.status_code == 200
+
+    metrics = server.make_request("GET", "/metrics")
+    assert metrics.status_code == 200
+    assert isinstance(metrics.body, str)
+    assert "llamacpp:slot_save_total" in metrics.body
+    assert "llamacpp:slot_restore_total" in metrics.body
+    assert "llamacpp:slot_restore_full_total" in metrics.body
+
+
 def test_load_split_model():
     global server
     server.offline = False
