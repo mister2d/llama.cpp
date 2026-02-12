@@ -1334,6 +1334,33 @@ The response contains a `timings` object, for example:
 }
 ```
 
+*Lifecycle metadata (when `--slot-lifecycle` is enabled)*
+
+Completion responses include a `slot_lifecycle` object that describes restore/save outcomes for the request:
+
+```json
+{
+  "slot_lifecycle": {
+    "enabled": true,
+    "id_slot": 0,
+    "restore_success": true,
+    "restore_effective": false,
+    "restore_quality": "full",
+    "restored_tokens": 2066,
+    "prompt_tokens": 18,
+    "cache_reused_tokens": 0,
+    "save_decision": "skipped_guard_no_cache_reuse",
+    "saved_tokens": 0
+  }
+}
+```
+
+Notes:
+- `restore_success` means restore API call + validation succeeded.
+- `restore_effective` indicates whether the completion actually reused prompt cache (`cache_reused_tokens > 0`).
+- `save_decision` reports whether state was persisted (`save_succeeded`) or guarded/skipped (for example `skipped_guard_no_cache_reuse`).
+- In streaming mode, `slot_lifecycle` is attached to the final chunk (the chunk with `finish_reason` and `timings`).
+
 This provides information on the performance of the server. It also allows calculating the current context usage.
 
 The total number of tokens in context is equal to `prompt_n + cache_n + predicted_n`
