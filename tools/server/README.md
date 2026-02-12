@@ -1375,7 +1375,8 @@ Completion responses include a `slot_lifecycle` object that describes restore/sa
 Notes:
 - `restore_success` means restore API call + validation succeeded.
 - `restore_effective` indicates whether the completion actually reused prompt cache (`cache_reused_tokens > 0`).
-- `save_decision` reports whether state was persisted (`save_succeeded`) or guarded/skipped (for example `skipped_guard_no_cache_reuse`).
+- `save_decision` reports whether state was persisted (`save_succeeded`) or guarded/skipped (for example `skipped_guard_low_reuse`).
+- `save_recovery_no_cache_reuse` indicates an explicit recovery save after a zero-cache-reuse restore when prompt/restored ratio is high enough to refresh stale state safely.
 - In streaming mode, `slot_lifecycle` is attached to the final chunk (the chunk with `finish_reason` and `timings`).
 
 This provides information on the performance of the server. It also allows calculating the current context usage.

@@ -1,13 +1,24 @@
 import pytest
 import requests
+import os
 from utils import *
 
 server = ServerPreset.tinyllama2()
+
+def _skip_if_offline_tinyllama_missing() -> None:
+    if os.environ.get("SKIP_SERVER_PRESET_PRELOAD", "").lower() not in {"1", "true", "yes"}:
+        return
+    model_path = "./tmp/ggml-org_test-model-stories260K_stories260K-f32.gguf"
+    if not os.path.exists(model_path):
+        pytest.skip(
+            "tinyllama test model not cached locally; unset SKIP_SERVER_PRESET_PRELOAD or preload presets first"
+        )
 
 
 @pytest.fixture(autouse=True)
 def create_server():
     global server
+    _skip_if_offline_tinyllama_missing()
     server = ServerPreset.tinyllama2()
 
 
@@ -100,6 +111,8 @@ def test_server_metrics_include_lifecycle_counters():
 
 def test_load_split_model():
     global server
+    if os.environ.get("SKIP_SERVER_PRESET_PRELOAD", "").lower() in {"1", "true", "yes"}:
+        pytest.skip("split-model download test requires preset preload/network access")
     server.offline = False
     server.model_hf_repo = "ggml-org/models"
     server.model_hf_file = "tinyllamas/split/stories15M-q8_0-00001-of-00003.gguf"
