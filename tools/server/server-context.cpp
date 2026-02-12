@@ -3488,6 +3488,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
                     lifecycle->prompt_tokens = final_res->n_prompt_tokens;
 
+                    if (lifecycle->restore_success && lifecycle->restored_tokens > 0 && final_res->timings.cache_n == 0) {
+                        lifecycle->save_skipped = true;
+                        lifecycle->save_decision = "skipped_guard_no_cache_reuse";
+                        SRV_INF(
+                            "slot lifecycle save skipped for request %s, model=%s, id_slot=%d due to zero cache reuse (cache_n=%d, restored=%zu, prompt_tokens=%d)\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                            final_res->timings.cache_n, lifecycle->restored_tokens, lifecycle->prompt_tokens
+                        );
+                        break;
+                    }
+
                     if (lifecycle->restored_tokens >= (size_t) std::max(0, lifecycle_save_min_restored_tokens)) {
                         const float ratio = lifecycle->restored_tokens > 0
                             ? (float) lifecycle->prompt_tokens / (float) lifecycle->restored_tokens
@@ -3677,6 +3688,14 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                                 if (!lifecycle->restore_success && !lifecycle->bootstrap_save_allowed) {
                                     should_skip = true;
                                     lifecycle->save_decision = "skipped_restore_unsuccessful";
+                                } else if (lifecycle->restore_success && lifecycle->restored_tokens > 0 && final_res->timings.cache_n == 0) {
+                                    should_skip = true;
+                                    lifecycle->save_decision = "skipped_guard_no_cache_reuse";
+                                    SRV_INF(
+                                        "slot lifecycle save skipped for request %s, model=%s, id_slot=%d due to zero cache reuse (cache_n=%d, restored=%zu, prompt_tokens=%d)\n",
+                                        completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot,
+                                        final_res->timings.cache_n, lifecycle->restored_tokens, lifecycle->prompt_tokens
+                                    );
                                 } else if (lifecycle->restored_tokens >= (size_t) std::max(0, lifecycle_save_min_restored_tokens)) {
                                     const float ratio = lifecycle->restored_tokens > 0
                                         ? (float) lifecycle->prompt_tokens / (float) lifecycle->restored_tokens
