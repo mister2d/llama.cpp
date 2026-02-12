@@ -55,6 +55,26 @@ static const char * slot_lifecycle_mode_to_arg(int32_t mode) {
     }
 }
 
+static void upsert_option_with_value(std::vector<std::string> & args, const std::string & option, const std::string & value) {
+    std::vector<std::string> filtered;
+    filtered.reserve(args.size());
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == option) {
+            // Skip this option and its value (if present).
+            if (i + 1 < args.size()) {
+                ++i;
+            }
+            continue;
+        }
+        filtered.push_back(std::move(args[i]));
+    }
+
+    filtered.push_back(option);
+    filtered.push_back(value);
+    args.swap(filtered);
+}
+
 static std::filesystem::path get_server_exec_path() {
 #if defined(_WIN32)
     wchar_t buf[32768] = { 0 };  // Large buffer to handle long paths
@@ -492,19 +512,13 @@ void server_models::load(const std::string & name) {
 
         // Preserve router-level lifecycle and idle policies in child servers.
         // This ensures explicit CLI args (for example --slot-lifecycle off) are honored.
-        child_args.push_back("--sleep-idle-seconds");
-        child_args.push_back(std::to_string(base_params.sleep_idle_seconds));
+        upsert_option_with_value(child_args, "--sleep-idle-seconds", std::to_string(base_params.sleep_idle_seconds));
         if (base_params.slot_lifecycle_mode_explicit) {
-            child_args.push_back("--slot-lifecycle");
-            child_args.push_back(slot_lifecycle_mode_to_arg(base_params.slot_lifecycle_mode));
-            child_args.push_back("--slot-lifecycle-strict-status-code");
-            child_args.push_back(std::to_string(base_params.slot_lifecycle_strict_status_code));
-            child_args.push_back("--slot-lifecycle-restore-min-tokens");
-            child_args.push_back(std::to_string(base_params.slot_lifecycle_restore_min_tokens));
-            child_args.push_back("--slot-lifecycle-save-min-restored-tokens");
-            child_args.push_back(std::to_string(base_params.slot_lifecycle_save_min_restored_tokens));
-            child_args.push_back("--slot-lifecycle-save-min-ratio");
-            child_args.push_back(std::to_string(base_params.slot_lifecycle_save_min_ratio));
+            upsert_option_with_value(child_args, "--slot-lifecycle", slot_lifecycle_mode_to_arg(base_params.slot_lifecycle_mode));
+            upsert_option_with_value(child_args, "--slot-lifecycle-strict-status-code", std::to_string(base_params.slot_lifecycle_strict_status_code));
+            upsert_option_with_value(child_args, "--slot-lifecycle-restore-min-tokens", std::to_string(base_params.slot_lifecycle_restore_min_tokens));
+            upsert_option_with_value(child_args, "--slot-lifecycle-save-min-restored-tokens", std::to_string(base_params.slot_lifecycle_save_min_restored_tokens));
+            upsert_option_with_value(child_args, "--slot-lifecycle-save-min-ratio", std::to_string(base_params.slot_lifecycle_save_min_ratio));
         }
 
         SRV_INF("%s", "spawning server instance with args:\n");
