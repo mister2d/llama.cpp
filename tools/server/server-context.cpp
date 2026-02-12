@@ -3251,6 +3251,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         bool strict = false;
         bool restore_attempted = false;
         bool restore_success = false;
+        bool restore_missing_file = false;
+        bool bootstrap_save_allowed = false;
         bool save_done = false;
         bool save_skipped = false;
 
@@ -3342,7 +3344,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
                 if (!std::filesystem::exists(lifecycle->filepath)) {
                     lifecycle->restore_success = false;
-                    lifecycle->save_decision = "skip_save_restore_missing";
+                    lifecycle->restore_missing_file = true;
+                    lifecycle->restore_quality = "missing";
+                    lifecycle->save_decision = "bootstrap_save_pending";
                     SRV_INF(
                         "slot lifecycle restore file missing for request %s, model=%s, id_slot=%d, file=%s\n",
                         completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->filename.c_str()
@@ -3351,6 +3355,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         res->error(make_strict_restore_error("slot lifecycle strict mode: restore file is missing"));
                         return res;
                     }
+                    lifecycle->bootstrap_save_allowed = true;
                 } else {
                     size_t n_restored = 0;
                     std::string restore_error;
@@ -3467,7 +3472,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 arr.push_back(res->to_json());
             }
 
-            if (lifecycle->enabled && lifecycle->restore_success && !lifecycle->save_done && !lifecycle->save_skipped) {
+            const bool should_try_save = lifecycle->enabled
+                && (lifecycle->restore_success || lifecycle->bootstrap_save_allowed)
+                && !lifecycle->save_done
+                && !lifecycle->save_skipped;
+            if (should_try_save) {
                 for (auto & result_ptr : all_results.results) {
                     auto * final_res = dynamic_cast<server_task_result_cmpl_final *>(result_ptr.get());
                     if (final_res == nullptr) {
@@ -3665,7 +3674,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                                 lifecycle->prompt_tokens = final_res->n_prompt_tokens;
 
                                 bool should_skip = false;
-                                if (!lifecycle->restore_success) {
+                                if (!lifecycle->restore_success && !lifecycle->bootstrap_save_allowed) {
                                     should_skip = true;
                                     lifecycle->save_decision = "skipped_restore_unsuccessful";
                                 } else if (lifecycle->restored_tokens >= (size_t) std::max(0, lifecycle_save_min_restored_tokens)) {

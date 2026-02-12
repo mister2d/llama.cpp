@@ -147,3 +147,31 @@ def test_slot_lifecycle_conservative_emits_restore_metadata_and_skip_reason():
     assert "slot_lifecycle" in res.body
     assert res.body["slot_lifecycle"]["restore_success"] is True
     assert res.body["slot_lifecycle"]["save_decision"] == "skipped_guard_low_reuse"
+
+
+def test_slot_lifecycle_conservative_bootstraps_when_restore_missing():
+    global server
+
+    default_slot_file = "./tmp/tinyllama-2.slot-0.bin"
+    sidecar_file = default_slot_file + ".ctxchk"
+    if os.path.exists(default_slot_file):
+        os.remove(default_slot_file)
+    if os.path.exists(sidecar_file):
+        os.remove(sidecar_file)
+
+    server.slot_lifecycle = "conservative"
+    server.slot_lifecycle_save_min_restored_tokens = 1
+    server.slot_lifecycle_save_min_ratio = 0.5
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "Bootstrap state file for conservative lifecycle mode.",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+    assert "slot_lifecycle" in res.body
+    assert res.body["slot_lifecycle"]["restore_success"] is False
+    assert res.body["slot_lifecycle"]["restore_quality"] == "missing"
+    assert res.body["slot_lifecycle"]["save_decision"] == "save_succeeded"
+    assert os.path.exists(default_slot_file)
