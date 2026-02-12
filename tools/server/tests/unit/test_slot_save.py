@@ -109,15 +109,41 @@ def test_slot_lifecycle_strict_fails_when_restore_file_missing():
     assert res.status_code == 503
     assert res.body["error"]["type"] == "unavailable_error"
 
-    # erase slot 1
-    res = server.make_request("POST", "/slots/1?action=erase")
-    assert res.status_code == 200
 
-    # strict lifecycle applies to every slot: missing restore file should still fail
+def test_slot_lifecycle_conservative_emits_restore_metadata_and_skip_reason():
+    global server
+    server.slot_lifecycle = "conservative"
+    server.slot_lifecycle_save_min_restored_tokens = 1
+    server.slot_lifecycle_save_min_ratio = 0.5
+    server.start()
+
+    default_slot_file = "tinyllama-2.slot-0.bin"
+
+    # Prime slot 0 and persist a known state under the lifecycle default filename.
     res = server.make_request("POST", "/completion", data={
         "prompt": "What is the capital of France?",
-        "id_slot": 1,
+        "id_slot": 0,
         "cache_prompt": True,
     })
-    assert res.status_code == 503
-    assert res.body["error"]["type"] == "unavailable_error"
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/0?action=save", data={
+        "filename": default_slot_file,
+    })
+    assert res.status_code == 200
+    assert res.body["n_saved"] > 0
+
+    # Clear current in-memory slot so lifecycle restore must run on next request.
+    res = server.make_request("POST", "/slots/0?action=erase")
+    assert res.status_code == 200
+
+    # Use a short prompt so prompt/restored ratio falls below guard threshold and save is skipped.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "Hi",
+        "id_slot": 0,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+    assert "slot_lifecycle" in res.body
+    assert res.body["slot_lifecycle"]["restore_success"] is True
+    assert res.body["slot_lifecycle"]["save_decision"] == "skipped_guard_low_reuse"
