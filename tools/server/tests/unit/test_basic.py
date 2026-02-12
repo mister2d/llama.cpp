@@ -61,6 +61,13 @@ def test_server_slots():
     assert server.n_ctx is not None and server.n_slots is not None
     assert res.body[0]["n_ctx"] == server.n_ctx / server.n_slots
     assert "params" not in res.body[0]
+    assert "lifecycle" in res.body[0]
+
+    res_diag = server.make_request("GET", "/slots?diagnostics=1")
+    assert res_diag.status_code == 200
+    assert "slots" in res_diag.body
+    assert "diagnostics" in res_diag.body
+    assert "n_slot_restore_total" in res_diag.body["diagnostics"]
 
 
 def test_load_split_model():

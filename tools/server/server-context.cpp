@@ -229,6 +229,18 @@ struct server_slot {
 
     std::string stopping_word;
 
+    // slot lifecycle observability (exposed via /slots)
+    std::string lifecycle_last_action = "none";
+    std::string lifecycle_last_filename;
+    std::string lifecycle_last_restore_quality = "unknown";
+    std::string lifecycle_last_error;
+    int64_t lifecycle_last_action_us = 0;
+    size_t lifecycle_last_tokens = 0;
+    size_t lifecycle_last_bytes = 0;
+    size_t lifecycle_last_checkpoints = 0;
+    bool lifecycle_last_ok = false;
+    double lifecycle_last_action_ms = 0.0;
+
     // state
     slot_state state = SLOT_STATE_IDLE;
 
@@ -308,6 +320,17 @@ struct server_slot {
         stop           = STOP_TYPE_NONE;
         stopping_word  = "";
         n_sent_text    = 0;
+
+        lifecycle_last_action = "none";
+        lifecycle_last_filename.clear();
+        lifecycle_last_restore_quality = "unknown";
+        lifecycle_last_error.clear();
+        lifecycle_last_action_us = 0;
+        lifecycle_last_tokens = 0;
+        lifecycle_last_bytes = 0;
+        lifecycle_last_checkpoints = 0;
+        lifecycle_last_ok = false;
+        lifecycle_last_action_ms = 0.0;
 
         drafted.clear();
         i_batch_dft.clear();
@@ -564,6 +587,19 @@ struct server_slot {
             }
         }
 
+        res["lifecycle"] = {
+            {"last_action", lifecycle_last_action},
+            {"last_filename", lifecycle_last_filename},
+            {"last_restore_quality", lifecycle_last_restore_quality},
+            {"last_error", lifecycle_last_error},
+            {"last_action_time_us", lifecycle_last_action_us},
+            {"last_tokens", lifecycle_last_tokens},
+            {"last_bytes", lifecycle_last_bytes},
+            {"last_checkpoints", lifecycle_last_checkpoints},
+            {"last_ok", lifecycle_last_ok},
+            {"last_action_ms", lifecycle_last_action_ms},
+        };
+
         return res;
     }
 
@@ -611,6 +647,14 @@ struct server_metrics {
 
     uint64_t n_decode_total     = 0;
     uint64_t n_busy_slots_total = 0;
+
+    uint64_t n_slot_save_total           = 0;
+    uint64_t n_slot_restore_total        = 0;
+    uint64_t n_slot_erase_total          = 0;
+    uint64_t n_slot_save_failed_total    = 0;
+    uint64_t n_slot_restore_failed_total = 0;
+    uint64_t n_slot_restore_full_total   = 0;
+    uint64_t n_slot_restore_legacy_total = 0;
 
     void init() {
         t_start = ggml_time_us();
@@ -1915,6 +1959,13 @@ private:
 
                     res->n_decode_total          = metrics.n_decode_total;
                     res->n_busy_slots_total      = metrics.n_busy_slots_total;
+                    res->n_slot_save_total       = metrics.n_slot_save_total;
+                    res->n_slot_restore_total    = metrics.n_slot_restore_total;
+                    res->n_slot_erase_total      = metrics.n_slot_erase_total;
+                    res->n_slot_save_failed_total = metrics.n_slot_save_failed_total;
+                    res->n_slot_restore_failed_total = metrics.n_slot_restore_failed_total;
+                    res->n_slot_restore_full_total = metrics.n_slot_restore_full_total;
+                    res->n_slot_restore_legacy_total = metrics.n_slot_restore_legacy_total;
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -1957,6 +2008,22 @@ private:
                         SRV_WRN("slot save sidecar write failed for slot=%d file=%s\n", id_slot, filepath.c_str());
                     }
 
+                    slot->lifecycle_last_action = "save";
+                    slot->lifecycle_last_filename = filename;
+                    slot->lifecycle_last_restore_quality = "n/a";
+                    slot->lifecycle_last_error.clear();
+                    slot->lifecycle_last_action_us = t_end;
+                    slot->lifecycle_last_tokens = token_count;
+                    slot->lifecycle_last_bytes = nwrite;
+                    slot->lifecycle_last_checkpoints = slot->prompt.checkpoints.size();
+                    slot->lifecycle_last_ok = nwrite > 0;
+                    slot->lifecycle_last_action_ms = t_save_ms;
+
+                    metrics.n_slot_save_total++;
+                    if (nwrite == 0) {
+                        metrics.n_slot_save_failed_total++;
+                    }
+
                     auto res = std::make_unique<server_task_result_slot_save_load>();
                     res->id       = task.id;
                     res->id_slot  = id_slot;
@@ -1964,6 +2031,7 @@ private:
                     res->is_save  = true;
                     res->n_tokens = token_count;
                     res->n_bytes  = nwrite;
+                    res->n_checkpoints = slot->prompt.checkpoints.size();
                     res->t_ms     = t_save_ms;
                     queue_results.send(std::move(res));
                 } break;
@@ -1994,6 +2062,18 @@ private:
                     size_t nread = llama_state_seq_load_file(ctx, filepath.c_str(), slot->id, tokens.data(), tokens.size(), &token_count);
                     if (nread == 0) {
                         slot->prompt.tokens.clear(); // KV may already been invalidated?
+                        slot->lifecycle_last_action = "restore";
+                        slot->lifecycle_last_filename = filename;
+                        slot->lifecycle_last_restore_quality = "failed";
+                        slot->lifecycle_last_error = "invalid slot save file or no KV space";
+                        slot->lifecycle_last_action_us = ggml_time_us();
+                        slot->lifecycle_last_tokens = 0;
+                        slot->lifecycle_last_bytes = 0;
+                        slot->lifecycle_last_checkpoints = 0;
+                        slot->lifecycle_last_ok = false;
+                        slot->lifecycle_last_action_ms = 0.0;
+                        metrics.n_slot_restore_total++;
+                        metrics.n_slot_restore_failed_total++;
                         send_error(task, "Unable to restore slot, no available space in KV cache or invalid slot save file", ERROR_TYPE_INVALID_REQUEST);
                         break;
                     }
@@ -2015,6 +2095,24 @@ private:
                         SRV_WRN("slot restore checkpoint sidecar missing/invalid: slot=%d file=%s\n", id_slot, filepath.c_str());
                     }
 
+                    slot->lifecycle_last_action = "restore";
+                    slot->lifecycle_last_filename = filename;
+                    slot->lifecycle_last_restore_quality = checkpoints_loaded ? "full" : "partial_legacy";
+                    slot->lifecycle_last_error.clear();
+                    slot->lifecycle_last_action_us = t_end;
+                    slot->lifecycle_last_tokens = token_count;
+                    slot->lifecycle_last_bytes = nread;
+                    slot->lifecycle_last_checkpoints = n_checkpoints_loaded;
+                    slot->lifecycle_last_ok = true;
+                    slot->lifecycle_last_action_ms = t_restore_ms;
+
+                    metrics.n_slot_restore_total++;
+                    if (checkpoints_loaded) {
+                        metrics.n_slot_restore_full_total++;
+                    } else {
+                        metrics.n_slot_restore_legacy_total++;
+                    }
+
                     auto res = std::make_unique<server_task_result_slot_save_load>();
                     res->id       = task.id;
                     res->id_slot  = id_slot;
@@ -2022,6 +2120,8 @@ private:
                     res->is_save  = false;
                     res->n_tokens = token_count;
                     res->n_bytes  = nread;
+                    res->n_checkpoints = n_checkpoints_loaded;
+                    res->sidecar_loaded = checkpoints_loaded;
                     res->t_ms     = t_restore_ms;
                     queue_results.send(std::move(res));
                 } break;
@@ -2042,6 +2142,18 @@ private:
                         queue_tasks.defer(std::move(task));
                         break;
                     }
+
+                    slot->lifecycle_last_action = "erase";
+                    slot->lifecycle_last_filename.clear();
+                    slot->lifecycle_last_restore_quality = "n/a";
+                    slot->lifecycle_last_error.clear();
+                    slot->lifecycle_last_action_us = ggml_time_us();
+                    slot->lifecycle_last_tokens = 0;
+                    slot->lifecycle_last_bytes = 0;
+                    slot->lifecycle_last_checkpoints = 0;
+                    slot->lifecycle_last_ok = true;
+                    slot->lifecycle_last_action_ms = 0.0;
+                    metrics.n_slot_erase_total++;
 
                     // Erase token cache
                     const size_t n_erased = slot->prompt.tokens.size();
@@ -3150,6 +3262,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         std::string model_name;
         std::string filename;
         std::string filepath;
+        std::string restore_quality = "not_attempted";
         std::string save_decision = "disabled";
     };
 
@@ -3168,7 +3281,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         const std::string & filename,
         const std::string & filepath,
         size_t & n_tokens_out,
-        std::string & err_out
+        std::string & err_out,
+        bool * sidecar_loaded_out = nullptr
     ) -> bool {
         server_response_reader rd_action(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
         server_task task(is_restore ? SERVER_TASK_TYPE_SLOT_RESTORE : SERVER_TASK_TYPE_SLOT_SAVE);
@@ -3194,6 +3308,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             return false;
         }
         n_tokens_out = res_slot->n_tokens;
+        if (sidecar_loaded_out != nullptr) {
+            *sidecar_loaded_out = res_slot->sidecar_loaded;
+        }
         return true;
     };
 
@@ -3237,32 +3354,37 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 } else {
                     size_t n_restored = 0;
                     std::string restore_error;
+                    bool restore_sidecar_loaded = false;
                     const bool restore_ok = run_slot_action(
                         true,
                         lifecycle->id_slot,
                         lifecycle->filename,
                         lifecycle->filepath,
                         n_restored,
-                        restore_error
+                        restore_error,
+                        &restore_sidecar_loaded
                     );
                     lifecycle->restored_tokens = n_restored;
                     lifecycle->restore_success = restore_ok && n_restored >= (size_t) std::max(0, lifecycle_restore_min_tokens);
                     if (!restore_ok) {
+                        lifecycle->restore_quality = "failed";
                         lifecycle->save_decision = "skip_save_restore_error";
                         SRV_WRN(
                             "slot lifecycle restore failed for request %s, model=%s, id_slot=%d, file=%s, error=%s\n",
                             completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->filename.c_str(), restore_error.c_str()
                         );
                     } else if (!lifecycle->restore_success) {
+                        lifecycle->restore_quality = "failed";
                         lifecycle->save_decision = "skip_save_restore_too_small";
                         SRV_WRN(
                             "slot lifecycle restore too small for request %s, model=%s, id_slot=%d, restored=%zu, min=%d\n",
                             completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, n_restored, lifecycle_restore_min_tokens
                         );
                     } else {
+                        lifecycle->restore_quality = restore_sidecar_loaded ? "full" : "partial_legacy";
                         SRV_INF(
-                            "slot lifecycle restore succeeded for request %s, model=%s, id_slot=%d, restored=%zu\n",
-                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, n_restored
+                            "slot lifecycle restore succeeded for request %s, model=%s, id_slot=%d, restored=%zu, quality=%s\n",
+                            completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, n_restored, lifecycle->restore_quality.c_str()
                         );
                     }
 
@@ -3381,7 +3503,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         lifecycle->filename,
                         lifecycle->filepath,
                         n_saved,
-                        save_error
+                        save_error,
+                        nullptr
                     );
                     lifecycle->save_done = true;
                     lifecycle->saved_tokens = n_saved;
@@ -3405,14 +3528,26 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
             if (lifecycle->enabled) {
                 SRV_INF(
-                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
+                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_quality=%s restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
                     completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
-                    lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
                 );
             }
 
             GGML_ASSERT(!arr.empty() && "empty results");
             if (arr.size() == 1) {
+                if (lifecycle->enabled && arr[0].is_object()) {
+                    arr[0]["slot_lifecycle"] = {
+                        {"enabled", lifecycle->enabled},
+                        {"id_slot", lifecycle->id_slot},
+                        {"restore_success", lifecycle->restore_success},
+                        {"restore_quality", lifecycle->restore_quality},
+                        {"restored_tokens", lifecycle->restored_tokens},
+                        {"prompt_tokens", lifecycle->prompt_tokens},
+                        {"save_decision", lifecycle->save_decision},
+                        {"saved_tokens", lifecycle->saved_tokens},
+                    };
+                }
                 // if single request, return single object instead of array
                 res->ok(arr[0]);
             } else if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
@@ -3559,7 +3694,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                                         lifecycle->filename,
                                         lifecycle->filepath,
                                         n_saved,
-                                        save_error
+                                        save_error,
+                                        nullptr
                                     );
                                     lifecycle->save_done = true;
                                     lifecycle->saved_tokens = n_saved;
@@ -3580,15 +3716,27 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                                 }
 
                                 SRV_INF(
-                                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
+                                    "slot lifecycle metrics request=%s model=%s id_slot=%d restore_success=%d restore_quality=%s restored=%zu prompt_tokens=%d save_decision=%s saved=%zu\n",
                                     completion_id.c_str(), lifecycle->model_name.c_str(), lifecycle->id_slot, lifecycle->restore_success,
-                                    lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
+                                    lifecycle->restore_quality.c_str(), lifecycle->restored_tokens, lifecycle->prompt_tokens, lifecycle->save_decision.c_str(), lifecycle->saved_tokens
                                 );
                             }
                         }
                     }
 
                     json res_json = result->to_json();
+                    if (lifecycle->enabled && dynamic_cast<server_task_result_cmpl_final *>(result.get()) != nullptr && res_json.is_object()) {
+                        res_json["slot_lifecycle"] = {
+                            {"enabled", lifecycle->enabled},
+                            {"id_slot", lifecycle->id_slot},
+                            {"restore_success", lifecycle->restore_success},
+                            {"restore_quality", lifecycle->restore_quality},
+                            {"restored_tokens", lifecycle->restored_tokens},
+                            {"prompt_tokens", lifecycle->prompt_tokens},
+                            {"save_decision", lifecycle->save_decision},
+                            {"saved_tokens", lifecycle->saved_tokens},
+                        };
+                    }
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);
                     } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
@@ -3704,6 +3852,34 @@ void server_routes::init_routes() {
                     {"name",  "n_busy_slots_per_decode"},
                     {"help",  "Average number of busy slots per llama_decode() call"},
                     {"value",  (float) res_task->n_busy_slots_total / std::max((float) res_task->n_decode_total, 1.f)}
+            }, {
+                    {"name",  "slot_save_total"},
+                    {"help",  "Total number of slot save actions."},
+                    {"value",  res_task->n_slot_save_total}
+            }, {
+                    {"name",  "slot_restore_total"},
+                    {"help",  "Total number of slot restore actions."},
+                    {"value",  res_task->n_slot_restore_total}
+            }, {
+                    {"name",  "slot_erase_total"},
+                    {"help",  "Total number of slot erase actions."},
+                    {"value",  res_task->n_slot_erase_total}
+            }, {
+                    {"name",  "slot_save_failed_total"},
+                    {"help",  "Total number of failed slot save actions."},
+                    {"value",  res_task->n_slot_save_failed_total}
+            }, {
+                    {"name",  "slot_restore_failed_total"},
+                    {"help",  "Total number of failed slot restore actions."},
+                    {"value",  res_task->n_slot_restore_failed_total}
+            }, {
+                    {"name",  "slot_restore_full_total"},
+                    {"help",  "Total number of slot restores with checkpoint sidecar loaded."},
+                    {"value",  res_task->n_slot_restore_full_total}
+            }, {
+                    {"name",  "slot_restore_legacy_total"},
+                    {"help",  "Total number of slot restores that fell back to legacy restore (no sidecar checkpoints)."},
+                    {"value",  res_task->n_slot_restore_legacy_total}
             }}},
             {"gauge", {{
                     {"name",  "prompt_tokens_seconds"},
@@ -3787,7 +3963,22 @@ void server_routes::init_routes() {
             }
         }
 
-        res->ok(res_task->slots_data);
+        if (!req.get_param("diagnostics").empty()) {
+            res->ok({
+                {"slots", res_task->slots_data},
+                {"diagnostics", {
+                    {"n_slot_save_total", res_task->n_slot_save_total},
+                    {"n_slot_restore_total", res_task->n_slot_restore_total},
+                    {"n_slot_erase_total", res_task->n_slot_erase_total},
+                    {"n_slot_save_failed_total", res_task->n_slot_save_failed_total},
+                    {"n_slot_restore_failed_total", res_task->n_slot_restore_failed_total},
+                    {"n_slot_restore_full_total", res_task->n_slot_restore_full_total},
+                    {"n_slot_restore_legacy_total", res_task->n_slot_restore_legacy_total},
+                }},
+            });
+        } else {
+            res->ok(res_task->slots_data);
+        }
         return res;
     };
 

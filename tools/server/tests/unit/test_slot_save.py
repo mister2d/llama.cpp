@@ -32,6 +32,7 @@ def test_slot_save_restore():
     })
     assert res.status_code == 200
     assert res.body["n_saved"] == 84
+    assert "n_checkpoints" in res.body
     assert os.path.exists("./tmp/slot1.bin.ctxchk")
 
     # Since we have cache, this should only process the last tokens
@@ -50,6 +51,8 @@ def test_slot_save_restore():
     })
     assert res.status_code == 200
     assert res.body["n_restored"] == 84
+    assert "n_checkpoints" in res.body
+    assert res.body["restore_quality"] in ["full", "partial_legacy"]
 
     # Since we have cache, slot 0 should only process the last tokens
     res = server.make_request("POST", "/completion", data={

@@ -1014,6 +1014,13 @@ Available metrics:
 - `llamacpp:requests_processing`: Number of requests processing.
 - `llamacpp:requests_deferred`: Number of requests deferred.
 - `llamacpp:n_tokens_max`: High watermark of the context size observed.
+- `llamacpp:slot_save_total`: Total number of slot save actions.
+- `llamacpp:slot_restore_total`: Total number of slot restore actions.
+- `llamacpp:slot_erase_total`: Total number of slot erase actions.
+- `llamacpp:slot_save_failed_total`: Total number of failed slot save actions.
+- `llamacpp:slot_restore_failed_total`: Total number of failed slot restore actions.
+- `llamacpp:slot_restore_full_total`: Restores with checkpoint sidecar data loaded.
+- `llamacpp:slot_restore_legacy_total`: Restores that fell back to legacy mode (no sidecar checkpoints).
 
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
 
@@ -1029,6 +1036,7 @@ Available metrics:
     "filename": "slot_save_file.bin",
     "n_saved": 1745,
     "n_written": 14309796,
+    "n_checkpoints": 3,
     "timings": {
         "save_ms": 49.865
     }
@@ -1049,6 +1057,8 @@ Available metrics:
     "filename": "slot_save_file.bin",
     "n_restored": 1745,
     "n_read": 14309796,
+    "n_checkpoints": 3,
+    "restore_quality": "full",
     "timings": {
         "restore_ms": 42.937
     }
@@ -1063,6 +1073,29 @@ Available metrics:
 {
     "id_slot": 0,
     "n_erased": 1745
+}
+```
+
+### GET `/slots?diagnostics=1`: Include slot lifecycle diagnostics
+
+When `diagnostics=1` is set, the response includes both per-slot state and a lifecycle diagnostics bundle:
+
+```json
+{
+    "slots": [
+        {
+            "id": 0,
+            "lifecycle": {
+                "last_action": "restore",
+                "last_restore_quality": "full"
+            }
+        }
+    ],
+    "diagnostics": {
+        "n_slot_save_total": 12,
+        "n_slot_restore_total": 9,
+        "n_slot_erase_total": 2
+    }
 }
 ```
 

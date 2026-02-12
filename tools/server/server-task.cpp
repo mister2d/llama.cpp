@@ -1761,6 +1761,13 @@ json server_task_result_metrics::to_json() {
 
         { "n_decode_total",                  n_decode_total },
         { "n_busy_slots_total",              n_busy_slots_total },
+        { "n_slot_save_total",               n_slot_save_total },
+        { "n_slot_restore_total",            n_slot_restore_total },
+        { "n_slot_erase_total",              n_slot_erase_total },
+        { "n_slot_save_failed_total",        n_slot_save_failed_total },
+        { "n_slot_restore_failed_total",     n_slot_restore_failed_total },
+        { "n_slot_restore_full_total",       n_slot_restore_full_total },
+        { "n_slot_restore_legacy_total",     n_slot_restore_legacy_total },
 
         { "slots",                           slots_data },
     };
@@ -1776,6 +1783,7 @@ json server_task_result_slot_save_load::to_json() {
             { "filename",  filename },
             { "n_saved",   n_tokens },
             { "n_written", n_bytes },
+            { "n_checkpoints", n_checkpoints },
             { "timings", {
                 { "save_ms", t_ms }
             }},
@@ -1787,6 +1795,8 @@ json server_task_result_slot_save_load::to_json() {
         { "filename",   filename },
         { "n_restored", n_tokens },
         { "n_read",     n_bytes },
+        { "n_checkpoints", n_checkpoints },
+        { "restore_quality", sidecar_loaded ? "full" : "partial_legacy" },
         { "timings", {
             { "restore_ms", t_ms }
         }},

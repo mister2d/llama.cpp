@@ -514,6 +514,15 @@ struct server_task_result_metrics : server_task_result {
     uint64_t n_decode_total     = 0;
     uint64_t n_busy_slots_total = 0;
 
+    // slot lifecycle / slot action observability
+    uint64_t n_slot_save_total            = 0;
+    uint64_t n_slot_restore_total         = 0;
+    uint64_t n_slot_erase_total           = 0;
+    uint64_t n_slot_save_failed_total     = 0;
+    uint64_t n_slot_restore_failed_total  = 0;
+    uint64_t n_slot_restore_full_total    = 0;
+    uint64_t n_slot_restore_legacy_total  = 0;
+
     // while we can also use std::vector<server_slot> this requires copying the slot object which can be quite messy
     // therefore, we use json to temporarily store the slot.to_json() result
     json slots_data = json::array();
@@ -527,6 +536,8 @@ struct server_task_result_slot_save_load : server_task_result {
 
     size_t n_tokens;
     size_t n_bytes;
+    size_t n_checkpoints = 0;
+    bool sidecar_loaded = false;
     double t_ms;
 
     virtual json to_json() override;
