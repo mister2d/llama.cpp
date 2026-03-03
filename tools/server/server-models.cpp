@@ -512,7 +512,9 @@ void server_models::load(const std::string & name) {
 
         // Preserve router-level lifecycle and idle policies in child servers.
         // This ensures explicit CLI args (for example --slot-lifecycle off) are honored.
-        upsert_option_with_value(child_args, "--sleep-idle-seconds", std::to_string(base_params.sleep_idle_seconds));
+        if (base_params.sleep_idle_seconds_explicit) {
+            upsert_option_with_value(child_args, "--sleep-idle-seconds", std::to_string(base_params.sleep_idle_seconds));
+        }
         if (base_params.slot_lifecycle_mode_explicit) {
             upsert_option_with_value(child_args, "--slot-lifecycle", slot_lifecycle_mode_to_arg(base_params.slot_lifecycle_mode));
             upsert_option_with_value(child_args, "--slot-lifecycle-strict-status-code", std::to_string(base_params.slot_lifecycle_strict_status_code));

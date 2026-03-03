@@ -3142,6 +3142,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 throw std::invalid_argument("invalid value: cannot be 0 or less than -1");
             }
             params.sleep_idle_seconds = value;
+            params.sleep_idle_seconds_explicit = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
