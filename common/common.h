@@ -104,6 +104,7 @@ enum llama_example {
     LLAMA_EXAMPLE_DIFFUSION,
     LLAMA_EXAMPLE_FINETUNE,
     LLAMA_EXAMPLE_FIT_PARAMS,
+    LLAMA_EXAMPLE_RESULTS,
 
     LLAMA_EXAMPLE_COUNT,
 };
@@ -410,7 +411,8 @@ struct common_params {
 
     struct common_params_model model;
 
-    std::string model_alias          = ""; // model alias                                                   // NOLINT
+    std::set<std::string> model_alias;     // model aliases                                                 // NOLINT
+    std::set<std::string> model_tags;      // model tags (informational, not used for routing)              // NOLINT
     std::string hf_token             = ""; // HF token                                                      // NOLINT
     std::string prompt               = "";                                                                  // NOLINT
     std::string system_prompt        = "";                                                                  // NOLINT
@@ -454,6 +456,8 @@ struct common_params {
     size_t multiple_choice_tasks = 0; // number of tasks to use when computing the TruthfulQA score. If 0, all tasks will be computed
 
     bool   kl_divergence    = false; // compute KL divergence
+
+    bool check             = false; // check rather than generate results for llama-results
 
     bool usage             = false; // print usage
     bool completion        = false; // print source-able completion script
@@ -515,14 +519,15 @@ struct common_params {
     std::string cls_sep    = "\t";  // separator of classification sequences
 
     // server params
-    int32_t port              = 8080;         // server listens on this network port
-    int32_t timeout_read      = 600;          // http read timeout in seconds
-    int32_t timeout_write     = timeout_read; // http write timeout in seconds
-    int32_t n_threads_http    = -1;           // number of threads to process HTTP requests (TODO: support threadpool)
-    int32_t n_cache_reuse     = 0;            // min chunk size to reuse from the cache via KV shifting
-    bool    cache_prompt      = true;         // whether to enable prompt caching
-    int32_t n_ctx_checkpoints = 8;            // max number of context checkpoints per slot
-    int32_t cache_ram_mib     = 8192;         // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t port                = 8080;          // server listens on this network port
+    int32_t timeout_read        = 600;           // http read timeout in seconds
+    int32_t timeout_write       = timeout_read;  // http write timeout in seconds
+    int32_t n_threads_http      = -1;    // number of threads to process HTTP requests (TODO: support threadpool)
+    int32_t n_cache_reuse       = 0;     // min chunk size to reuse from the cache via KV shifting
+    bool    cache_prompt        = true;  // whether to enable prompt caching
+    int32_t n_ctx_checkpoints   = 32;     // max number of context checkpoints per slot
+    int32_t checkpoint_every_nt = 8192;   // make a checkpoint every n tokens during prefill
+    int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";                                                                         // NOLINT
@@ -545,6 +550,7 @@ struct common_params {
 
     // webui configs
     bool webui = true;
+    bool webui_mcp_proxy = false;
     std::string webui_config_json;
 
     // "advanced" endpoints are disabled by default for better security
@@ -683,30 +689,55 @@ static std::vector<T> string_split(const std::string & str, char delim) {
 }
 
 template<>
-std::vector<std::string> string_split<std::string>(const std::string & input, char separator)
+inline std::vector<std::string> string_split<std::string>(const std::string & str, char delim)
 {
     std::vector<std::string> parts;
     size_t begin_pos = 0;
-    size_t separator_pos = input.find(separator);
-    while (separator_pos != std::string::npos) {
-        std::string part = input.substr(begin_pos, separator_pos - begin_pos);
+    size_t delim_pos = str.find(delim);
+    while (delim_pos != std::string::npos) {
+        std::string part = str.substr(begin_pos, delim_pos - begin_pos);
         parts.emplace_back(part);
-        begin_pos = separator_pos + 1;
-        separator_pos = input.find(separator, begin_pos);
+        begin_pos = delim_pos + 1;
+        delim_pos = str.find(delim, begin_pos);
     }
-    parts.emplace_back(input.substr(begin_pos, separator_pos - begin_pos));
+    parts.emplace_back(str.substr(begin_pos));
     return parts;
 }
 
-static bool string_starts_with(const std::string & str,
-                               const std::string & prefix) {  // While we wait for C++20's std::string::starts_with...
-    return str.rfind(prefix, 0) == 0;
+// remove when moving to c++20
+inline bool string_starts_with(std::string_view str, std::string_view prefix) {
+    return str.size() >= prefix.size() &&
+           str.compare(0, prefix.size(), prefix) == 0;
 }
 
-// While we wait for C++20's std::string::ends_with...
-bool string_ends_with(const std::string_view & str, const std::string_view & suffix);
-bool string_remove_suffix(std::string & str, const std::string_view & suffix);
-size_t string_find_partial_stop(const std::string_view & str, const std::string_view & stop);
+// remove when moving to c++20
+inline bool string_ends_with(std::string_view str, std::string_view suffix) {
+    return str.size() >= suffix.size() &&
+           str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+inline bool string_remove_suffix(std::string & str, std::string_view suffix) {
+    if (string_ends_with(str, suffix)) {
+        str.resize(str.size() - suffix.size());
+        return true;
+    }
+    return false;
+}
+
+inline size_t string_find_partial_stop(std::string_view str, std::string_view stop) {
+    if (!str.empty() && !stop.empty()) {
+        const size_t max_len = std::min(str.size(), stop.size());
+        const char last_char = str.back();
+        for (size_t len = max_len; len > 0; --len) {
+            if (stop[len - 1] == last_char) {
+                if (string_ends_with(str, stop.substr(0, len))) {
+                    return str.size() - len;
+                }
+            }
+        }
+    }
+    return std::string::npos;
+}
 
 bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_override> & overrides);
 void string_process_escapes(std::string & input);
@@ -792,15 +823,22 @@ void common_batch_add(
     const std::vector<llama_seq_id> & seq_ids,
                                bool   logits);
 
+// decodes a single batch of tokens for a prompt and manages session tokens
 //
-// Token utils
-//
+// Note: We save state before the last token so that we can replay it to ensure
+// compatibility with all memory types. Recurrent/hybrid models cannot remove
+// tokens from memory, so this approach works across all model architectures.
+bool common_prompt_batch_decode(
+              struct llama_context * ctx,
+    const std::vector<llama_token> & embd,
+                               int & n_past,
+                               int   n_batch,
+                  std::string_view   state_path,
+                              bool   save_state);
 
-// longest common prefix
-size_t common_lcp(const llama_tokens & a, const llama_tokens & b);
-
-// longet common subsequence
-size_t common_lcs(const llama_tokens & a, const llama_tokens & b);
+// replays the last token after loading state to regenerate logits
+// used after loading session state to ensure the sampling context has valid logits
+bool common_replay_last_token(struct llama_context * ctx, llama_token last_token, int32_t pos);
 
 //
 // Vocab utils
@@ -849,7 +887,7 @@ std::string common_detokenize(
 // Embedding utils
 //
 
-// TODO: repace embd_norm with an enum
+// TODO: replace embd_norm with an enum
 void common_embd_normalize(const float * inp, float * out, int n, int embd_norm);
 
 float common_embd_similarity_cos(const float * embd1, const float * embd2, int n);
@@ -893,11 +931,11 @@ const char * const LLM_KV_SPLIT_TENSORS_COUNT = "split.tensors.count";
 
 const char * const LLM_FFN_EXPS_REGEX = "\\.ffn_(up|down|gate)_(ch|)exps";
 
-static std::string llm_ffn_exps_block_regex(int idx) {
+inline std::string llm_ffn_exps_block_regex(int idx) {
     return string_format("blk\\.%d%s", idx, LLM_FFN_EXPS_REGEX);
 }
 
-static llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
+inline llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
     return { LLM_FFN_EXPS_REGEX, ggml_backend_cpu_buffer_type() };
 }
 
