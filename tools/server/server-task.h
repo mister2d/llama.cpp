@@ -567,10 +567,10 @@ struct server_task_result_apply_lora : server_task_result {
 };
 
 struct server_prompt_checkpoint {
-    llama_pos pos_min;
-    llama_pos pos_max;
+    llama_pos pos_min = -1;
+    llama_pos pos_max = -1;
 
-    int64_t n_tokens;
+    int64_t n_tokens = 0;
 
     std::vector<uint8_t> data;
 
