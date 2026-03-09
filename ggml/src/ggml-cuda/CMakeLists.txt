@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.18)  # for CMAKE_CUDA_ARCHITECTURES
 
+if (NOT APPLE AND NOT WIN32 AND EXISTS "/usr/lib/x86_64-linux-gnu")
+    list(APPEND CMAKE_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu")
+endif()
+
 find_package(CUDAToolkit)
 
 if (CUDAToolkit_FOUND)
